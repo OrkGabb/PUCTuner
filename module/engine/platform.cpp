@@ -277,15 +277,29 @@ void FrameTracker::finish(Observation& s, int cap) {
         // that collapses from 30 fps to 17 is re-read as "a 17 fps app, on time" and the
         // controller never sees a reason to act. Raise on demonstrated capability; lower only
         // after the app has sustained the slower rate, so one bad scene cannot redefine intent.
+        const int proposed = best;
         if (cadence > 0 && cadence <= cap) {
-            if (best > cadence) { slower = 0; }
+            if (best > cadence) {
+                // Raising is evidence-gated too now, if less strictly than lowering. Adopting a
+                // faster divisor from a single window turned ordinary estimator noise into target
+                // changes: after the time-share fix removed the 120 misread, NTE still moved
+                // between 20, 24, 30, 40 and 60 in 17 of 160 windows, and the deficit for one
+                // physical state (18-22 fps) still spanned 5x. The adjacent divisors genuinely
+                // overlap -- +/-25% around 41.7, 33.3 and 25 ms leaves no gap -- so which one
+                // clears first is decided by jitter. Lowering waits ten windows because a bad
+                // scene must not redefine intent; raising waits three, because a capability that
+                // just appeared should still be noticed inside twenty seconds.
+                if (++faster < 3) best = cadence; else { faster = 0; slower = 0; }
+            }
             else if (best < cadence) {
+                faster = 0;
                 if (timeShare(1000. / cadence) >= .05 || ++slower < 10) best = cadence;
                 else slower = 0;
-            } else slower = 0;
+            } else { slower = 0; faster = 0; }
         }
         cadence = best;
         s.target = best;
+        s.cadenceSeen = proposed;
         s.jank = std::count_if(samples.begin(), samples.end(), [&](double x) { return x > 1500. / s.target; }) / double(samples.size());
     }
     samples.clear();

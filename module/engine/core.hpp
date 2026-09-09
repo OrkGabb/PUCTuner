@@ -58,6 +58,10 @@ struct Observation {
     double queueMs = 0, queuePeakMs = 0, queueLate = 0;
     bool queueValid = false;
     int frames = 0, battery = 0, target = 60;
+    // What this window alone proposed as the cadence, before stickiness. Exported so the gap
+    // between proposal and adopted target is measurable instead of argued about: the hysteresis
+    // constants below are only defensible while that gap is small.
+    int cadenceSeen = 0;
     bool awake = false, charging = false, thermalValid = false, powerValid = false;
     bool framesValid = false, loadValid = false;
     std::string app;

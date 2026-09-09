@@ -33,11 +33,12 @@ struct FrameTracker {
     double period = 0;   // display vsync period in ns, from the --latency header
     int cadence = 0;     // fps this app has demonstrated it can render at, sticky per app
     int slower = 0;      // consecutive windows the app failed to reach that cadence
+    int faster = 0;      // consecutive windows it proposed a quicker one
     std::vector<double> samples;
     void addLatency(const std::string& dump, double now);
     // `cap` is the user's ceiling, not an assumption about the app: the cadence is measured.
     void finish(Observation& s, int cap);
-    void reset() { last = first = 0; cadence = 0; slower = 0; samples.clear(); }
+    void reset() { last = first = 0; cadence = 0; slower = faster = 0; samples.clear(); }
 };
 class Sampler {
     std::vector<std::string> thermals;

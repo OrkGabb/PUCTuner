@@ -656,6 +656,36 @@ int main() {
         gpuBound.addLatency(bursty, 100); gpuBound.finish(strained, 120);
         assert(strained.framesValid && strained.target > 17 && strained.target < 24);
         assert(strained.jank < .1);               // it is slow, not late against its own intent
+        // Raising the target is evidence-gated, not instant. Adjacent divisors overlap -- the
+        // +/-25% windows around 41.7, 33.3 and 25 ms leave no gap -- so on a jittery stream which
+        // one clears the bar first is decided by noise, and adopting it immediately turned that
+        // noise into target changes in 17 of 160 measured windows. A genuinely faster app is
+        // still picked up, three windows later.
+        FrameTracker gated; Observation seen;
+        int64_t clock = 96000000000LL;
+        auto window = [&](FrameTracker& t, Observation& o, int64_t step, int count, double now) {
+            std::string dump = "8333333\n";
+            for (int i = 0; i < count; ++i) { clock += step; dump += "0 " + std::to_string(clock) + " 0\n"; }
+            t.addLatency(dump, now); t.finish(o, 120);
+        };
+        window(gated, seen, 33333333, 60, 98);
+        assert(seen.target == 30 && seen.cadenceSeen == 30);
+        for (int settled = 0; settled < 2; ++settled) {
+            window(gated, seen, 16666667, 120, 100 + settled * 2);
+            // The window itself says 60; the target does not move on its word alone.
+            assert(seen.cadenceSeen == 60 && seen.target == 30);
+        }
+        window(gated, seen, 16666667, 120, 104);
+        assert(seen.cadenceSeen == 60 && seen.target == 60);
+        // And it is consecutive evidence, not cumulative: one window back at 30 clears the count.
+        FrameTracker flapping; Observation flap;
+        clock = 96000000000LL;
+        window(flapping, flap, 33333333, 60, 98);
+        window(flapping, flap, 16666667, 120, 100);
+        window(flapping, flap, 33333333, 60, 102);
+        window(flapping, flap, 16666667, 120, 104);
+        window(flapping, flap, 16666667, 120, 106);
+        assert(flap.cadenceSeen == 60 && flap.target == 30);
     }
 
     // Consecutive windows of a 30 fps stream must count only new presentations. Each poll

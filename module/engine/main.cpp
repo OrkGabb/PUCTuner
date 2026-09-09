@@ -29,6 +29,7 @@ static std::string describe(const Observation& s) {
     // The measured cadence has to be visible: without it a late window and a genuinely slow
     // app produce the same p95, which is exactly the confusion that hid the burst misread.
     out << "app=" << s.app << "\nframes=" << s.frames << "\ncadence=" << s.target
+        << "\ncadence_seen=" << s.cadenceSeen
         << "\np95_ms=" << s.p95 << "\njank=" << s.jank
         << "\nframe_start=" << std::setprecision(12) << s.frameStart
         << "\nframe_end=" << s.frameEnd << std::setprecision(6)
@@ -73,7 +74,7 @@ static constexpr char HistoryHeader[] =
     // `cadence` sits next to jank because jank is a share of intervals past 1500/cadence ms:
     // without the denominator in the file, the column cannot be compared between two sessions,
     // and a run whose cadence was detected higher reads as a run that got worse.
-    "at,profile,app,action,frames,cadence,p95_ms,jank,temp,energy,samples,windows,state_value,budget,"
+    "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,energy,samples,windows,state_value,budget,"
     "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit,"
     // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
     // the point of logging them is to fit those scales to measured windows rather than guess again.
@@ -490,7 +491,7 @@ int main(int argc, char** argv) {
         }
         auto history = openHistory(dir + "/adaptive_history.csv", 131072);
         history << s.at << ',' << profile << ',' << hash(s.app) << ',' << current.id() << ',' << s.frames << ','
-                << s.target << ','
+                << s.target << ',' << s.cadenceSeen << ','
                 << s.p95 << ',' << s.jank << ',' << s.temp << ',' << s.energy << ',' << brain.model.samples << ','
                 << brain.windows << ',' << lastValue << ',' << allowance.remaining() << ','
                 << (s.queueValid ? s.queueMs : -1) << ',' << (s.queueValid ? s.queuePeakMs : -1) << ','
