@@ -30,6 +30,7 @@ struct Action {
 };
 struct Observation {
     double at = 0, cpu = 0, gpu = 0, cpuPsi = 0, memPsi = 0, ioPsi = 0;
+    long memAvailKb = 0;
     // Busiest single core, and busiest single thread of the foreground app, both as a fraction
     // of one core. Aggregate utilisation cannot see a saturated thread: one core pinned at 100%
     // of eight reads as 12.5% overall, which is what a CPU-bound game looks like to a controller

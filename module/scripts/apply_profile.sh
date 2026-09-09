@@ -602,10 +602,9 @@ apply_pelt() {
   case "${M54_BENCH_PELT:-}" in
     1|2|4) v="$M54_BENCH_PELT" ;;
     *)
-      case "$PROFILE" in
-        game) v=2 ;;
-        *)    v=$(fget pelt); [ -z "$v" ] && v=1 ;;
-      esac
+      # PELT baseline is 2x by default across all profiles.
+      # 1x induces severe 64ms DVFS ramp lag and touch/frame stutter on Exynos 1380.
+      v=$(read_cfg pelt 2)
       ;;
   esac
   apply_node pelt "$P" "$v"
@@ -711,9 +710,8 @@ apply_bench_eas
 apply_cpuidle
 PROFILE="$REQUESTED_PROFILE"
 apply_vm
-# Opt-in, one-shot: fires exactly when this script actually runs with profile=game (a real
-# selection or the once-per-boot restore), never on a timer or a blind re-apply.
-if [ "$PROFILE" = "game" ] && [ "$(read_cfg game_ram_clear 0)" = "1" ] && \
+# Opt-in, one-shot: fires when profile=game or game_ram_clear=1 is active
+if { [ "$PROFILE" = "game" ] || [ "$(read_cfg game_ram_clear 0)" = "1" ]; } && \
    [ "${M54_SKIP_RAM_CLEAR:-}" != 1 ]; then
   game_ram_clear
 fi

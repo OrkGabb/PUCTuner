@@ -20,6 +20,8 @@ std::string processConflict(bool& fas);
 std::vector<std::string> lockedTuningNodes();
 std::string foreground(const std::string& activityDump);
 std::string chooseLayer(const std::string& dump, const std::string& app);
+long availableMemoryKb();
+bool trimBackgroundMemory(long& freedKb);
 struct FrameTracker {
     int64_t last = 0;
     int64_t first = 0;

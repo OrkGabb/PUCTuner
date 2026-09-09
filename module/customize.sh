@@ -44,7 +44,9 @@ samsung_mars_off=0
 protect_list=
 protect_adj=-700
 protect_interval=1
-game_ram_clear=0
+game_ram_clear=1
+adaptive_ram_management=1
+pelt=2
 thermal_guard=1
 thermal_guard_high=78000
 thermal_guard_low=70000
@@ -82,7 +84,9 @@ else
   add_key protect_list ""
   add_key protect_adj -700
   add_key protect_interval 1
-  add_key game_ram_clear 0
+  add_key game_ram_clear 1
+  add_key adaptive_ram_management 1
+  add_key pelt 2
   add_key thermal_guard 1
   add_key thermal_guard_high 78000
   add_key thermal_guard_low 70000

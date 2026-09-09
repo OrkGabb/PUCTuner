@@ -40,7 +40,8 @@ static std::string describe(const Observation& s) {
         << "\ntemp=" << s.temp << "\nbattery_temp=" << s.batteryTemp
         << "\nwatts=" << (s.powerValid ? std::to_string(s.watts) : "unavailable")
         << "\nenergy_source=" << (s.powerValid ? "battery_mA_uV" : "clock_load_proxy")
-        << "\nthermal_valid=" << s.thermalValid << "\nframes_valid=" << s.framesValid << "\nawake=" << s.awake << '\n';
+        << "\nthermal_valid=" << s.thermalValid << "\nframes_valid=" << s.framesValid << "\nawake=" << s.awake
+        << "\nmem_avail_kb=" << s.memAvailKb << '\n';
     return out.str();
 }
 static std::string pidRecord() {
@@ -198,6 +199,9 @@ int main(int argc, char** argv) {
     double lastError = 0, lastValue = 0;
     uint64_t rejected = 0, passiveWindows = 0;
     int rehearsed = 0;
+    double lastRamTrimAt = -100;
+    uint64_t totalRamTrims = 0;
+    long lastRamFreedKb = 0;
     // A pair armed from a window the engine was not controlling. It still measured a real
     // transition of this device, so it earns a value backup; it earns nothing else, because the
     // engine did not choose to hold still there, it was not permitted to move.
@@ -251,6 +255,28 @@ int main(int argc, char** argv) {
         auto nextSession = s.app + ':' + profile + ':' + configId + ':' + std::to_string(fas) + ':' + conflict;
         bool transition = nextSession != session;
         bool bench = benchmark(dir);
+        // Autonomous RAM Management:
+        // Background cached apps hoard gigabytes of memory, starving UE5/graphics texture streaming pools,
+        // triggering low-res mipmap drops, LOD cutbacks, and heavy ZRAM paging stalls.
+        // Trim background cached apps proactively during memory starvation or upon demanding game launch.
+        bool enableRamTrim = value(cfg, "adaptive_ram_management", "1") == "1" ||
+                             value(cfg, "game_ram_clear", "0") == "1";
+        if (enableRamTrim && s.awake && !s.app.empty() && s.memAvailKb > 0) {
+            bool renderWorkload = s.framesValid || s.frames > 0;
+            bool demandingWorkload = demanding(s);
+            bool severePressure = s.memPsi > 0.12 || s.memAvailKb < 800000;
+            bool gamingShortage = (renderWorkload || demandingWorkload) && (s.memAvailKb < 1500000 || s.memPsi > 0.08);
+            double cooldown = (s.memAvailKb < 600000) ? 20.0 : 60.0;
+            if ((severePressure || gamingShortage) && (tick - lastRamTrimAt >= cooldown || (transition && (renderWorkload || demandingWorkload)))) {
+                long freed = 0;
+                if (trimBackgroundMemory(freed)) {
+                    lastRamTrimAt = tick;
+                    ++totalRamTrims;
+                    lastRamFreedKb = freed;
+                    s.memAvailKb = availableMemoryKb();
+                }
+            }
+        }
         if (s.temp >= limits.high || s.batteryTemp >= limits.batteryHigh) cooling = true;
         if (cooling && s.thermalValid && s.temp <= limits.high - 5 && s.batteryTemp <= limits.batteryHigh - 2) cooling = false;
         bool safeNow = !cooling && s.awake && s.thermalValid && s.loadValid && s.temp < limits.high && s.batteryTemp < limits.batteryHigh && s.battery >= 10;
@@ -419,6 +445,9 @@ int main(int argc, char** argv) {
                << "\nqueue_late=" << s.queueLate << "\nqueue_valid=" << s.queueValid
                << "\nprobe=" << sampler.probeReason() << "\nlocked_nodes=" << locked.size()
                << "\nowner=" << (fas ? "fas-rs+M54" : "M54") << "\ncapabilities=" << actuator.capabilities()
+               << "\nmem_avail_mb=" << (s.memAvailKb > 0 ? s.memAvailKb / 1024 : -1)
+               << "\nram_trims=" << totalRamTrims
+               << "\nlast_trim_freed_mb=" << (lastRamFreedKb / 1024)
                << "\nat=" << monotonic() << '\n';
         atomicText(dir + "/adaptive_status", status.str());
         if ((brain.model.samples > 0 || brain.windows > 0) && tick - savedAt >= 60) {

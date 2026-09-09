@@ -280,6 +280,26 @@ static double psi(const std::string& path) {
     auto data = readText(path, 1024); auto pos = data.find("avg10=");
     return pos == std::string::npos ? 0 : std::clamp(number(data.substr(pos + 6), 0) / 100, 0., 1.);
 }
+long availableMemoryKb() {
+    std::string text = readText("/proc/meminfo", 1024);
+    auto pos = text.find("MemAvailable:");
+    if (pos == std::string::npos) return -1;
+    pos += 13;
+    while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) ++pos;
+    long val = 0;
+    while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
+        val = val * 10 + (text[pos] - '0');
+        ++pos;
+    }
+    return val;
+}
+bool trimBackgroundMemory(long& freedKb) {
+    long before = availableMemoryKb();
+    int rc = std::system("cmd activity kill-all >/dev/null 2>&1 || am kill-all >/dev/null 2>&1");
+    long after = availableMemoryKb();
+    freedKb = (after > before) ? (after - before) : 0;
+    return rc == 0;
+}
 Sampler::Sampler(const std::string& moduleRoot) {
     for (const auto& z : globPaths("/sys/class/thermal/thermal_zone*")) {
         auto type = trim(readText(z + "/type", 128));
@@ -329,6 +349,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
     }
     s.gpu = std::clamp(number(readText("/sys/kernel/gpu/gpu_busy", 64), 0) / 100, 0., 1.);
     s.cpuPsi = psi("/proc/pressure/cpu"); s.memPsi = psi("/proc/pressure/memory"); s.ioPsi = psi("/proc/pressure/io");
+    s.memAvailKb = availableMemoryKb();
     int readTemps = 0;
     for (const auto& z : thermals) {
         double t = number(readText(z, 64)) / 1000.;
@@ -506,9 +527,8 @@ Constraints Actuator::constrain(Constraints c, const std::map<std::string, std::
     auto has = [&](const std::string& key) { auto it = cfg.find(key); return it != cfg.end() && !it->second.empty(); };
     std::array<bool, 4> present{};
     for (const auto& n : nodes) {
-        // PELT has one exploratory setting: 2x. If the captured baseline is already 2x,
-        // this action changes no hardware and must not earn a policy preference or credit.
-        if (n.axis == 3 ? n.original == 1 : n.table.size() > 1) present[n.axis] = true;
+        // PELT baseline is 2x; exploratory boost reaches 4x under heavy/rendering load.
+        if (n.axis == 3 ? n.original < 4 : n.table.size() > 1) present[n.axis] = true;
     }
     for (int i = 0; i < 4; ++i) c.allowed[i] = c.allowed[i] && present[i];
     // A running fas-rs always owns DVFS, even if someone toggled companion off in the UI.
@@ -532,7 +552,10 @@ bool Actuator::apply(Action action, const Constraints& limits) {
         failureAxis = n.axis;
         int level = action.level[n.axis];
         long desired = n.original;
-        if (n.axis == 3) { desired = level == 0 ? n.original : 2; }
+        if (n.axis == 3) {
+            long baseline = n.original >= 2 ? n.original : 2;
+            desired = level == 0 ? baseline : (level >= 2 ? 4 : baseline);
+        }
         else {
             if (n.table.empty()) continue;
             long cap = static_cast<long>(number(readText(n.maxPath, 64), 0));

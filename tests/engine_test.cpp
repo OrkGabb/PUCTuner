@@ -619,9 +619,15 @@ int main() {
         assert(number(readText(dir + "/pelt")) == 1);
         assert(!writer.constrain(c, {{"adaptive_pelt", "1"}}, true).allowed[3]);
         file(dir + "/pelt", "2");
-        Actuator alreadyFast(dir, withPelt);
-        assert(!alreadyFast.constrain(c, {}, false).allowed[3]);
-        assert(alreadyFast.constrain(c, {}, false).allowed[0]);
+        Actuator fast(dir, withPelt);
+        assert(fast.constrain(c, {}, false).allowed[3]);
+        Action boost4; boost4.level[3] = 2;
+        assert(fast.apply(boost4, enabled) && number(readText(dir + "/pelt")) == 4);
+        assert(fast.restore() && number(readText(dir + "/pelt")) == 2);
+        file(dir + "/pelt", "4");
+        Actuator maxed(dir, withPelt);
+        assert(!maxed.constrain(c, {}, false).allowed[3]);
+        assert(maxed.constrain(c, {}, false).allowed[0]);
     }
     {
         Actuator writer(dir, nodes); Action boost; boost.level[0] = 4;
