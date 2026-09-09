@@ -11,6 +11,8 @@
 > **The first closed-loop Reinforcement Learning autonomous hardware controller for Android (MCTS with PUCT selection, eBPF runqueue telemetry, and silicon-aware transition dynamics).**  
 > Reference production platform and calibration: **Samsung Galaxy M54 5G (SM-M546B / Exynos 1380)**.
 
+📖 **Core Documentation:** [Technical Deep-Dive & Architecture](docs/HOW_IT_WORKS.md) · [Benchmarks & Empirical Validation](docs/BENCHMARKS.md) · [eBPF Telemetry](docs/EBPF.md) · [Building Guide](BUILDING.md)
+
 ---
 
 ## ⚡ Paradigm Shift: No More Placebos
