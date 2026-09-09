@@ -41,7 +41,13 @@ static std::string describe(const Observation& s) {
         << "\nwatts=" << (s.powerValid ? std::to_string(s.watts) : "unavailable")
         << "\nenergy_source=" << (s.powerValid ? "battery_mA_uV" : "clock_load_proxy")
         << "\nthermal_valid=" << s.thermalValid << "\nframes_valid=" << s.framesValid << "\nawake=" << s.awake
-        << "\nmem_avail_kb=" << s.memAvailKb << '\n';
+        << "\nmem_avail_kb=" << s.memAvailKb
+        // Rates, not the raw counters: /proc/vmstat is monotonic since boot, so its absolute
+        // values say nothing about this window. -1 marks a window that was not differenced.
+        << "\nmajor_faults_s=" << (s.pagingValid ? s.majorFaults : -1)
+        << "\nswap_in_s=" << (s.pagingValid ? s.swapIn : -1)
+        << "\nfile_refault_s=" << (s.pagingValid ? s.fileRefault : -1)
+        << "\npaging_valid=" << s.pagingValid << '\n';
     return out.str();
 }
 static std::string pidRecord() {
@@ -64,8 +70,14 @@ static void rotate(const std::string& path, off_t limit) {
     if (stat(path.c_str(), &st) == 0 && st.st_size > limit) rename(path.c_str(), (path + ".1").c_str());
 }
 static constexpr char HistoryHeader[] =
-    "at,profile,app,action,frames,p95_ms,jank,temp,energy,samples,windows,state_value,budget,"
-    "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit";
+    // `cadence` sits next to jank because jank is a share of intervals past 1500/cadence ms:
+    // without the denominator in the file, the column cannot be compared between two sessions,
+    // and a run whose cadence was detected higher reads as a run that got worse.
+    "at,profile,app,action,frames,cadence,p95_ms,jank,temp,energy,samples,windows,state_value,budget,"
+    "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit,"
+    // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
+    // the point of logging them is to fit those scales to measured windows rather than guess again.
+    "major_faults_s,swap_in_s,file_refault_s";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
 static std::ofstream openHistory(const std::string& path, off_t limit) {
@@ -202,6 +214,8 @@ int main(int argc, char** argv) {
     double lastRamTrimAt = -100;
     uint64_t totalRamTrims = 0;
     long lastRamFreedKb = 0;
+    bool trimMeasured = false;     // "unknown" and "measured zero" are different facts
+    long trimBaselineKb = 0;       // MemAvailable at the moment the pending trim was requested
     // A pair armed from a window the engine was not controlling. It still measured a real
     // transition of this device, so it earns a value backup; it earns nothing else, because the
     // engine did not choose to hold still there, it was not permitted to move.
@@ -259,6 +273,14 @@ int main(int argc, char** argv) {
         // Background cached apps hoard gigabytes of memory, starving UE5/graphics texture streaming pools,
         // triggering low-res mipmap drops, LOD cutbacks, and heavy ZRAM paging stalls.
         // Trim background cached apps proactively during memory starvation or upon demanding game launch.
+        if (trimBaselineKb > 0 && s.memAvailKb > 0) {
+            // Signed on purpose. Clamping at zero merges "the kill freed nothing" with "it freed
+            // 200 MB and the foreground allocated 250 back inside the same window", and those
+            // call for opposite conclusions about whether the trim is worth doing at all.
+            lastRamFreedKb = s.memAvailKb - trimBaselineKb;
+            trimBaselineKb = 0;
+            trimMeasured = true;
+        }
         bool enableRamTrim = value(cfg, "adaptive_ram_management", "1") == "1" ||
                              value(cfg, "game_ram_clear", "0") == "1";
         if (enableRamTrim && s.awake && !s.app.empty() && s.memAvailKb > 0) {
@@ -268,12 +290,16 @@ int main(int argc, char** argv) {
             bool gamingShortage = (renderWorkload || demandingWorkload) && (s.memAvailKb < 1500000 || s.memPsi > 0.08);
             double cooldown = (s.memAvailKb < 600000) ? 20.0 : 60.0;
             if ((severePressure || gamingShortage) && (tick - lastRamTrimAt >= cooldown || (transition && (renderWorkload || demandingWorkload)))) {
-                long freed = 0;
-                if (trimBackgroundMemory(freed)) {
+                if (trimBackgroundMemory()) {
                     lastRamTrimAt = tick;
                     ++totalRamTrims;
-                    lastRamFreedKb = freed;
-                    s.memAvailKb = availableMemoryKb();
+                    // The effect is read at the NEXT window boundary, never inline. `kill-all`
+                    // returns as soon as ActivityManager has acknowledged it, while process
+                    // teardown and page reclaim run asynchronously afterwards -- so a
+                    // MemAvailable read microseconds later is taken before a single page has
+                    // come back. That is why every trim this engine has ever performed reported
+                    // last_trim_freed_mb=0: an action with no measurement behind it.
+                    trimBaselineKb = s.memAvailKb;
                 }
             }
         }
@@ -340,10 +366,14 @@ int main(int argc, char** argv) {
             // window, inflating its apparent FPS and changing its cadence/learning target.
             session = nextSession;
             if (transition || measuredAction != current) changedAt = tick;
-            if (!verified) { reason = "external_write"; changedAt = tick; }
+            if (!verified) changedAt = tick;
         }
         if (!conflict.empty()) reason = "conflict_" + conflict;
         else if (bench) reason = "benchmark";
+        // Ranked here rather than assigned above the chain, where it was overwritten by the very
+        // next line and could therefore never be reported: in 922 recorded windows it appeared
+        // zero times, which said nothing about how often another owner moved a node we held.
+        else if (!verified) reason = "external_write";
         else if (!s.awake) reason = "screen_idle";
         else if (!safeNow) reason = "thermal_or_sensor_guard";
         else if (!s.framesValid) reason = "waiting_frames";
@@ -426,6 +456,11 @@ int main(int argc, char** argv) {
                << "\ndeficit_queue=" << (shortfall.valid[QueueChannel] ? shortfall.value[QueueChannel] : -1)
                << "\ndeficit_stall=" << (shortfall.valid[StallChannel] ? shortfall.value[StallChannel] : -1)
                << "\ndemanding=" << demanding(s) << "\ncan_learn=" << canLearn
+               // The two halves of canLearn, separately. 210 of 922 windows armed an action and
+               // then dropped the measurement as "context_lost", and with only the verdict
+               // exported there was no way to tell an unmeasurable window from a node another
+               // owner had moved under us.
+               << "\nnodes_verified=" << verified << "\nmeasurable=" << measurable(s)
                << "\ncan_control=" << canControl << "\npassive_windows=" << passiveWindows
                << "\nmeasured_action=" << measuredAction.id()
                << "\npelt_allowed=" << limits.allowed[3]
@@ -447,7 +482,7 @@ int main(int argc, char** argv) {
                << "\nowner=" << (fas ? "fas-rs+M54" : "M54") << "\ncapabilities=" << actuator.capabilities()
                << "\nmem_avail_mb=" << (s.memAvailKb > 0 ? s.memAvailKb / 1024 : -1)
                << "\nram_trims=" << totalRamTrims
-               << "\nlast_trim_freed_mb=" << (lastRamFreedKb / 1024)
+               << "\nlast_trim_freed_mb=" << (trimMeasured ? std::to_string(lastRamFreedKb / 1024) : "unmeasured")
                << "\nat=" << monotonic() << '\n';
         atomicText(dir + "/adaptive_status", status.str());
         if ((brain.model.samples > 0 || brain.windows > 0) && tick - savedAt >= 60) {
@@ -455,12 +490,16 @@ int main(int argc, char** argv) {
         }
         auto history = openHistory(dir + "/adaptive_history.csv", 131072);
         history << s.at << ',' << profile << ',' << hash(s.app) << ',' << current.id() << ',' << s.frames << ','
+                << s.target << ','
                 << s.p95 << ',' << s.jank << ',' << s.temp << ',' << s.energy << ',' << brain.model.samples << ','
                 << brain.windows << ',' << lastValue << ',' << allowance.remaining() << ','
                 << (s.queueValid ? s.queueMs : -1) << ',' << (s.queueValid ? s.queuePeakMs : -1) << ','
                 << (s.queueValid ? s.queueLate : -1) << ',' << reason << ',' << regime << ',' << shortfall.primary()
                 << ',' << (shortfall.valid[StallChannel] ? shortfall.value[StallChannel] : -1)
-                << ',' << credit << '\n';
+                << ',' << credit
+                << ',' << (s.pagingValid ? s.majorFaults : -1)
+                << ',' << (s.pagingValid ? s.swapIn : -1)
+                << ',' << (s.pagingValid ? s.fileRefault : -1) << '\n';
         pauseFor(std::max(.05, 1. - (monotonic() - tick)));
     }
     if (brain.model.samples > 0 || brain.windows > 0) atomicText(dir + "/adaptive_model", brain.serialize(identity));

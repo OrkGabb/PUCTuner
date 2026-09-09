@@ -37,6 +37,34 @@ int main() {
     for (auto x : candidates({}, s, c)) assert(x.action.level[0] == 0 && x.action.level[1] == 0);
     c.allowed = {true, true, true, true};
 
+    // ---- paging observer -------------------------------------------------------------------
+    {
+        // The whole contract of this channel is that it is measured and nothing else. If any of
+        // these four ever fails, an unvalidated signal has started steering the device.
+        auto thrashing = s;
+        thrashing.pagingValid = true;
+        // The p99 of each channel as actually measured on this device, so the scales stay
+        // anchored to the report that set them rather than to a number someone liked.
+        thrashing.majorFaults = 16484; thrashing.swapIn = 7122; thrashing.fileRefault = 44617;
+        const auto quiet = s; // same window, paging simply not measured
+        assert(costs(thrashing, c, a) == costs(quiet, c, a));
+        assert(reward(thrashing, c, a) == reward(quiet, c, a));
+        assert(deficit(thrashing).value == deficit(quiet).value);
+        assert(demanding(thrashing) == demanding(quiet) && measurable(thrashing) == measurable(quiet));
+        assert(safe(a, thrashing, c) == safe(a, quiet, c));
+        // It does reach the critic, which is the point: learning in an unvalidated regime is free.
+        const auto loud = features(thrashing, c, a), still = features(quiet, c, a);
+        assert(loud[25] > .85 && loud[25] < 1 && loud[26] > .95 && loud[26] < 1);
+        // The measured maxima saturate, which is what a scale set at p99 is supposed to do.
+        auto storm = thrashing; storm.swapIn = 31507; storm.fileRefault = 56953;
+        assert(features(storm, c, a)[25] == 1 && features(storm, c, a)[26] == 1);
+        assert(still[25] == 0 && still[26] == 0);
+        for (size_t k = 0; k < PagingFreeFeatures; ++k) assert(loud[k] == still[k]);
+        // An unmeasured window reads as zero rather than as "no paging happened at a huge rate".
+        auto unmeasured = thrashing; unmeasured.pagingValid = false;
+        assert(features(unmeasured, c, a)[25] == 0 && features(unmeasured, c, a)[26] == 0);
+    }
+
     // ---- thermal-energy allowance ---------------------------------------------------------
     {
         Constraints capped = c; capped.ceiling = 1;
@@ -414,10 +442,43 @@ int main() {
     assert(!restored.deserialize("", "device1"));
     {
         // A file that survives the checksum but claims impossible values is still rejected.
-        std::string body = "M54_BRAIN_4 device1 0 0 0 0\nV 0";
+        std::string body = "M54_BRAIN_5 device1 0 0 0 0\nV 0";
         for (size_t i = 0; i < 2 * Critic::Dim; ++i) body += " 900";
         body += '\n';
         assert(!restored.deserialize(body + "CHECK " + std::to_string(hash(body)) + '\n', "device1"));
+    }
+    {
+        // ---- a brain saved before the paging channels ----------------------------------------
+        // The width changed; the meaning of every weight below it did not. So the file loads,
+        // the value function it encodes is reproduced exactly on the features it knew about, the
+        // two new ones start at zero, and the replay buffer survives -- which is the difference
+        // between a schema change and throwing away four thousand measured windows.
+        std::string narrow = "M54_BRAIN_5 device1 12 12 0 0\n";
+        auto row = [](size_t width, double weight) {
+            std::string out;
+            for (size_t k = 0; k < width; ++k) out += ' ' + std::to_string(weight);
+            for (size_t k = 0; k < width; ++k) out += " 0";
+            return out;
+        };
+        for (size_t term = 0; term < static_cast<size_t>(Costs); ++term)
+            narrow += "V " + std::to_string(term) + row(PagingFreeFeatures, .25) + '\n';
+        // Rewritten as the version that predates the channels, byte for byte apart from the tag.
+        narrow.replace(0, 11, "M54_BRAIN_4");
+        Brain aged;
+        assert(aged.deserialize(narrow + "CHECK " + std::to_string(hash(narrow)) + '\n', "device1"));
+        for (size_t term = 0; term < static_cast<size_t>(Costs); ++term) {
+            for (size_t k = 0; k < PagingFreeFeatures; ++k)
+                assert(std::abs(aged.critic.weights[term][k] - .25) < 1e-9);
+            for (size_t k = PagingFreeFeatures; k < Critic::Dim; ++k)
+                assert(aged.critic.weights[term][k] == 0 && aged.critic.scale[term][k] == 0);
+        }
+        assert(aged.windows == 12 && aged.model.samples == 12);
+        // Read at the current width the same bytes would swallow the next row and be rejected,
+        // which is exactly the failure the version tag exists to prevent.
+        std::string mislabelled = narrow;
+        mislabelled.replace(0, 11, "M54_BRAIN_5");
+        Brain confused;
+        assert(!confused.deserialize(mislabelled + "CHECK " + std::to_string(hash(mislabelled)) + '\n', "device1"));
     }
     {
         // ---- migration from the per-profile brain --------------------------------------------
@@ -439,8 +500,8 @@ int main() {
             out << "C 1:" << body << otherCfg << "/0/5 4 12  99 .1 .2 .3 .4  1 0 0 0 0\n";
             for (size_t t = 0; t < 3; ++t) {
                 out << "V " << t << ' ' << updates[t];
-                for (auto x : weights[t]) out << ' ' << x;
-                for (size_t k = 0; k < Critic::Dim; ++k) out << " 0";
+                for (size_t k = 0; k < PagingFreeFeatures; ++k) out << ' ' << weights[t][k];
+                for (size_t k = 0; k < PagingFreeFeatures; ++k) out << " 0";
                 out << '\n';
                 out << "P " << t;
                 for (int m = 0; m < Moves; ++m) out << " 0";
@@ -458,7 +519,10 @@ int main() {
         std::array<uint32_t, 3> updates{{300, 900, 0}};
         std::mt19937 noise(19);
         std::uniform_real_distribution<double> spread(-.2, .2);
-        for (size_t t = 0; t < 2; ++t) for (size_t k = 0; k < Critic::Dim; ++k) weights[t][k] = spread(noise);
+        // A brain of that vintage carried PagingFreeFeatures weights; the ones added since read
+        // zero out of it, which is what the value check below relies on.
+        for (size_t t = 0; t < 2; ++t)
+            for (size_t k = 0; k < PagingFreeFeatures; ++k) weights[t][k] = spread(noise);
         const auto body = legacyBody(weights, updates);
         const std::map<std::string, std::string> rehome{{oldCfg, newCfg}};
 
@@ -567,6 +631,31 @@ int main() {
         FrameTracker steady; Observation calm;
         steady.addLatency(lobby, 100); steady.finish(calm, 120);
         assert(calm.target == 30 && calm.jank < .1);
+        // The stream that broke the objective on this device: a GPU-bound app presenting about
+        // 20 fps in bursts. Exactly 15% of its INTERVALS are 8.3 ms apart, which cleared the old
+        // count-based bar and declared a 120 fps intent -- while those bursts occupy 2.5% of the
+        // window's time. Same p95, deficit 1.000 instead of 0.131, and the critic trained on both
+        // labels for the same device state. Measured against time, the burst is small.
+        std::string bursty = "8333333\n";
+        at = 97000000000LL;
+        double burstTime = 0, wallTime = 0;
+        int bursts = 0, intervals = 0;
+        for (int i = 0; i < 60; ++i) {
+            const int64_t step = (i % 6 == 0) ? 8333333 : 57350000;
+            at += step;
+            bursty += "0 " + std::to_string(at) + " 0\n";
+            if (i == 0) continue;                 // the first timestamp only seeds the cursor
+            ++intervals; wallTime += step;
+            if (step == 8333333) { ++bursts; burstTime += step; }
+        }
+        // The two ways of asking "how much of this window ran at 120 Hz" disagree by a factor of
+        // six on the same stream, and the old bar sat exactly between them.
+        assert(bursts / double(intervals) >= .15);
+        assert(burstTime / wallTime < .03);
+        FrameTracker gpuBound; Observation strained;
+        gpuBound.addLatency(bursty, 100); gpuBound.finish(strained, 120);
+        assert(strained.framesValid && strained.target > 17 && strained.target < 24);
+        assert(strained.jank < .1);               // it is slow, not late against its own intent
     }
 
     // Consecutive windows of a 30 fps stream must count only new presentations. Each poll
@@ -628,6 +717,20 @@ int main() {
         Actuator maxed(dir, withPelt);
         assert(!maxed.constrain(c, {}, false).allowed[3]);
         assert(maxed.constrain(c, {}, false).allowed[0]);
+    }
+    {
+        // A floor we do not own may be moved under us between windows -- Samsung's top-app QoS
+        // boost does exactly this to scaling_min_freq. The baseline has to follow it, or a
+        // daemon that started during a boost freezes the boosted value as "factory" and every
+        // level below it silently becomes a no-op.
+        file(dir + "/min", "600");
+        Actuator drifting(dir, nodes);
+        file(dir + "/min", "100");                  // the boost let go before we ever wrote
+        Action low; low.level[0] = 1;               // asks for a floor above 100, below 600
+        assert(drifting.apply(low, c));
+        assert(number(readText(dir + "/min")) > 100 && number(readText(dir + "/min")) < 600);
+        assert(drifting.restore() && number(readText(dir + "/min")) == 100); // 100, not the stale 600
+        file(dir + "/min", "100");
     }
     {
         Actuator writer(dir, nodes); Action boost; boost.level[0] = 4;

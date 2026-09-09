@@ -11,7 +11,9 @@ std::map<std::string, std::string> readConfig(const std::string& path);
 double number(const std::string& text, double fallback = -1);
 double monotonic();
 std::vector<std::string> globPaths(const std::string& pattern);
-std::string command(const std::vector<std::string>& args, int timeoutMs = 1500);
+// `exitCode`, when asked for, distinguishes "ran and failed" from "ran and printed nothing",
+// which the return value alone cannot: both are the empty string. -1 means it never ran.
+std::string command(const std::vector<std::string>& args, int timeoutMs = 1500, int* exitCode = nullptr);
 std::string processConflict(bool& fas);
 // Tuning nodes that exist but are not writable. A node another module left at mode 0444 is a
 // different failure from a node this kernel does not have, and reporting both as "absent"
@@ -21,7 +23,10 @@ std::vector<std::string> lockedTuningNodes();
 std::string foreground(const std::string& activityDump);
 std::string chooseLayer(const std::string& dump, const std::string& app);
 long availableMemoryKb();
-bool trimBackgroundMemory(long& freedKb);
+// Fires the trim and says only whether the request was accepted. How much it actually freed is
+// deliberately NOT returned: teardown and reclaim are asynchronous, so the only honest answer
+// comes from the next window's MemAvailable, and main.cpp is where that comparison belongs.
+bool trimBackgroundMemory();
 struct FrameTracker {
     int64_t last = 0;
     int64_t first = 0;
@@ -44,6 +49,10 @@ class Sampler {
     std::map<int, uint64_t> threadTicks;
     double threadAt = 0;
     double lastTemp = 0, lastAt = 0;
+    // /proc/vmstat counters are monotonic since boot, so only their difference across a closed
+    // window means anything. Differenced at the window boundary, never at the 1 s poll.
+    uint64_t prevMajorFaults = 0, prevSwapIn = 0, prevFileRefault = 0;
+    double pagingAt = 0;
     std::string app, layer;
     double contextAt = -100;
     bool awake = false; // cached power state between the 6 s context refreshes

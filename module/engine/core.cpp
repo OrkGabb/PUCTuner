@@ -218,6 +218,18 @@ Features features(const Observation& s, const Constraints& c, Action applied) {
     // Stutter counted against a fixed 50 ms threshold rather than against the detected cadence:
     // independent of whether the cadence estimate itself is right.
     f[24] = d.valid[FrameChannel] ? clip(s.slowFrames50 / 20., 0, 1) : 0;
+    // Paging, on exactly the terms f[21] is on: in the features, out of the objective, until it
+    // has demonstrated correlation with observed stutter on this device's own windows. It gets no
+    // absence flag for the reason given above -- /proc/vmstat is readable in every window of every
+    // run here, so the flag would be a third copy of the bias while telling the critic nothing.
+    //
+    // The scales are the measured p99 of each channel over 483 windows of real use on this
+    // device (tools/paging_report.py, 2026-09-09): swap-in 7122/s, file refault 44617/s. The
+    // first guesses -- 2000 and 20000 -- clipped the top decile of exactly the signal being
+    // evaluated, which is the one part of the range where the question is decided. Re-fit from
+    // the report rather than from intuition if the workload mix changes.
+    f[25] = s.pagingValid ? clip(s.swapIn / 8000., 0, 1) : 0;
+    f[26] = s.pagingValid ? clip(s.fileRefault / 45000., 0, 1) : 0;
     return f;
 }
 Action safe(Action a, const Observation& s, const Constraints& c) {
@@ -232,8 +244,14 @@ Action safe(Action a, const Observation& s, const Constraints& c) {
     int max = Levels - 1;
     if (s.temp + std::max(0., s.trend) * 12 >= c.high - 3 || s.battery < 20) max = 1;
     max = std::min(max, std::clamp(c.ceiling, 0, Levels - 1));
+    // PELT has two settings, not five: the 2x baseline and the 4x boost, which the actuator only
+    // writes from level 2 up. Clamping this axis at 1 made that boost unreachable -- the branch
+    // that writes 4 could never be selected by the planner, only by a direct actuator test -- so
+    // the axis cost effort and earned credit while never changing the multiplier. Clamped at 2
+    // instead, the thermal rule above still holds it at baseline exactly when it matters: max
+    // drops to 1 near the limit, and level 1 is the baseline.
     for (int i = 0; i < Axes; ++i)
-        a.level[i] = c.allowed[i] ? std::clamp(a.level[i], 0, i == 3 ? std::min(1, max) : max) : 0;
+        a.level[i] = c.allowed[i] ? std::clamp(a.level[i], 0, i == 3 ? std::min(2, max) : max) : 0;
     // Stale/missing frames do not justify exploratory boosts.
     if (!s.framesValid) for (auto& x : a.level) x = 0;
     return a;
@@ -668,7 +686,7 @@ static void warmStart(Critic& critic, const std::array<std::array<double, Critic
 
 std::string Brain::serialize(const std::string& identity) const {
     std::ostringstream out;
-    out << "M54_BRAIN_4 " << identity << ' ' << model.samples << ' ' << windows << ' '
+    out << "M54_BRAIN_5 " << identity << ' ' << model.samples << ' ' << windows << ' '
         << prior.updates << ' ' << replay.seen << '\n' << std::setprecision(9);
     out << "B " << budget << '\n';
     for (const auto& [key, e] : model.cells) {
@@ -718,10 +736,14 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
     if (!(in >> version >> id >> totalSamples >> totalWindows >> priorUpdates >> replaySeen) ||
         id != identity) return false;
     const bool legacy = version == "M54_BRAIN_3" || version == "M54_BRAIN_2";
-    if (!legacy && version != "M54_BRAIN_4") return false;
-    // Version 2 predates the regime channels. Its weights are read at the old width and the new
-    // features start at zero, which is where an unseen feature starts anyway.
-    const size_t dim = version == "M54_BRAIN_2" ? LegacyFeatures : Critic::Dim;
+    if (!legacy && version != "M54_BRAIN_4" && version != "M54_BRAIN_5") return false;
+    // Version 2 predates the regime channels, versions 3 and 4 the paging channels. Older weights
+    // are read at their own width and the features added since start at zero, which is where an
+    // unseen feature starts anyway. Reading a narrow file at the current width would swallow the
+    // next row's tokens and throw away a brain that is perfectly usable.
+    const size_t dim = version == "M54_BRAIN_2" ? LegacyFeatures
+                     : version == "M54_BRAIN_5" ? Critic::Dim
+                                                : PagingFreeFeatures;
     Brain restored;
     std::array<std::array<double, Critic::Dim>, 3> legacyWeights{};
     std::array<uint32_t, 3> legacyUpdates{};
@@ -773,9 +795,14 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
                     if (!(in >> discard) || !std::isfinite(discard) || discard < 0 || discard > 100) return false;
             } else {
                 if (t >= static_cast<size_t>(Costs)) return false;
-                for (auto& x : restored.critic.weights[t]) if (!(in >> x) || !bounded(x, 8)) return false;
-                for (auto& x : restored.critic.scale[t])
+                for (size_t k = 0; k < dim; ++k) {
+                    auto& x = restored.critic.weights[t][k];
+                    if (!(in >> x) || !bounded(x, 8)) return false;
+                }
+                for (size_t k = 0; k < dim; ++k) {
+                    auto& x = restored.critic.scale[t][k];
                     if (!(in >> x) || !std::isfinite(x) || x < 0 || x > 100) return false;
+                }
             }
         } else if (tag == "P") {
             size_t t = 0;

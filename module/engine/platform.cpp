@@ -79,7 +79,8 @@ std::vector<std::string> globPaths(const std::string& pattern) {
         for (size_t i = 0; i < g.gl_pathc; ++i) out.emplace_back(g.gl_pathv[i]);
     globfree(&g); return out;
 }
-std::string command(const std::vector<std::string>& args, int timeoutMs) {
+std::string command(const std::vector<std::string>& args, int timeoutMs, int* exitCode) {
+    if (exitCode) *exitCode = -1;
     int pipes[2]; if (pipe2(pipes, O_CLOEXEC) != 0) return {};
     pid_t pid = fork();
     if (pid == 0) {
@@ -107,6 +108,7 @@ std::string command(const std::vector<std::string>& args, int timeoutMs) {
     if (!complete) kill(pid, SIGKILL);
     int status = 0;
     while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    if (exitCode && complete && WIFEXITED(status)) *exitCode = WEXITSTATUS(status);
     return complete && WIFEXITED(status) && WEXITSTATUS(status) == 0 ? output : std::string{};
 }
 std::string processConflict(bool& fas) {
@@ -235,19 +237,35 @@ void FrameTracker::finish(Observation& s, int cap) {
         // dropping half its frames be re-read as a slower app that is doing fine.
         //
         // So ask the question directly: what is the FASTEST cadence this app actually delivers
-        // often enough to be its intent? Dropped frames land on multiples of the base period
-        // and bursts are too rare to clear the share, so both tails are ignored on their own.
+        // enough of the window at to be its intent? Dropped frames land on multiples of the base
+        // period, so the slow tail is ignored on its own. "Enough of the window" used to read
+        // "enough of the intervals", and that was wrong -- see below, bursts are neither rare
+        // nor cheap to clear when every interval counts the same regardless of its length.
         const double panel = period > 0 ? 1e9 / period : 60;
-        const double total = static_cast<double>(samples.size());
+        // Share of the window's TIME spent at a rate, not share of intervals. Counting intervals
+        // weights an 8 ms present exactly as heavily as a 91 ms one, so a burst of paired
+        // presents -- which is what a GPU-bound app's triple-buffered stream looks like -- clears
+        // a 15% count bar while occupying 2% of the window, and the fastest divisor wins on
+        // almost nothing. Measured here on 2026-09-09: NTE presenting a steady 19-22 fps was read
+        // as 24, 30, 40, 60 and 120 within one session, and the SAME p95 of 58.1 ms scored
+        // deficit 0.131 under 24 and 1.000 under 120. A critic cannot learn from a label that
+        // swings sevenfold on an unchanged device, and no amount of run time repairs it -- the
+        // contradictory windows are the training data. Time share is the axis on which a burst is
+        // small and a genuinely fast app is still large: an app alternating 8.3 ms and 25 ms
+        // spends a quarter of its window at 120, while a 20 fps stream with the same count of
+        // 8.3 ms bursts spends two per cent there.
+        const double elapsed = s.frameTimeMs;
+        auto timeShare = [&](double target) {
+            double held = 0;
+            for (double interval : samples)
+                if (interval >= target * .75 && interval <= target * 1.25) held += interval;
+            return elapsed > 0 ? held / elapsed : 0.;
+        };
         int best = 0;
         for (int divisor = 1; divisor <= 5 && best == 0; ++divisor) {
             const double hz = panel / divisor;
             if (hz < 20 || hz > cap + .5) continue;
-            const double target = 1000. / hz;
-            const double share = std::count_if(samples.begin(), samples.end(), [&](double x) {
-                return x >= target * .75 && x <= target * 1.25;
-            }) / total;
-            if (share >= .15) best = static_cast<int>(std::lround(hz));
+            if (timeShare(1000. / hz) >= .15) best = static_cast<int>(std::lround(hz));
         }
         if (best == 0) {
             // Nothing matched a panel divisor: fall back to the median, still bounded by the cap.
@@ -262,11 +280,8 @@ void FrameTracker::finish(Observation& s, int cap) {
         if (cadence > 0 && cadence <= cap) {
             if (best > cadence) { slower = 0; }
             else if (best < cadence) {
-                const double keep = 1000. / cadence;
-                const double share = std::count_if(samples.begin(), samples.end(), [&](double x) {
-                    return x >= keep * .75 && x <= keep * 1.25;
-                }) / total;
-                if (share >= .05 || ++slower < 10) best = cadence; else slower = 0;
+                if (timeShare(1000. / cadence) >= .05 || ++slower < 10) best = cadence;
+                else slower = 0;
             } else slower = 0;
         }
         cadence = best;
@@ -275,6 +290,18 @@ void FrameTracker::finish(Observation& s, int cap) {
     }
     samples.clear();
     first = 0;
+}
+// Three counters out of the ~200 lines of /proc/vmstat, read once per closed window. The file
+// is a flat "name value" table. `workingset_refault_file` is the split name; kernels before the
+// anon/file split export the total as `workingset_refault`, and either answers the same question.
+static void pagingCounters(uint64_t& majorFaults, uint64_t& swapIn, uint64_t& fileRefault) {
+    std::istringstream in(readText("/proc/vmstat", 32768));
+    std::string key; uint64_t value = 0;
+    while (in >> key >> value) {
+        if (key == "pgmajfault") majorFaults = value;
+        else if (key == "pswpin") swapIn = value;
+        else if (key == "workingset_refault_file" || key == "workingset_refault") fileRefault = value;
+    }
 }
 static double psi(const std::string& path) {
     auto data = readText(path, 1024); auto pos = data.find("avg10=");
@@ -293,12 +320,17 @@ long availableMemoryKb() {
     }
     return val;
 }
-bool trimBackgroundMemory(long& freedKb) {
-    long before = availableMemoryKb();
-    int rc = std::system("cmd activity kill-all >/dev/null 2>&1 || am kill-all >/dev/null 2>&1");
-    long after = availableMemoryKb();
-    freedKb = (after > before) ? (after - before) : 0;
-    return rc == 0;
+bool trimBackgroundMemory() {
+    // `command` rather than std::system: no shell between us and the binder call, a bounded
+    // timeout instead of an open-ended block inside a six-second control loop, and stdio that
+    // cannot reach the daemon's own descriptors. `am` is only kept as a fallback for images
+    // where `cmd` is missing, and it is tried only when `cmd` actually reported failure --
+    // running both unconditionally would kill the background twice.
+    int status = -1;
+    command({"cmd", "activity", "kill-all"}, 2000, &status);
+    if (status == 0) return true;
+    command({"am", "kill-all"}, 2000, &status);
+    return status == 0;
 }
 Sampler::Sampler(const std::string& moduleRoot) {
     for (const auto& z : globPaths("/sys/class/thermal/thermal_zone*")) {
@@ -389,6 +421,23 @@ Observation Sampler::read(int cap, bool finishWindow) {
     // window in which the user changed apps — on a phone in real use, most of them.
     if (queue.active() && finishWindow)
         s.queueValid = queue.sample(s.queueMs, s.queuePeakMs, s.queueLate);
+    if (finishWindow) {
+        uint64_t majorFaults = prevMajorFaults, swapIn = prevSwapIn, fileRefault = prevFileRefault;
+        pagingCounters(majorFaults, swapIn, fileRefault);
+        const double elapsed = s.at - pagingAt;
+        // A counter that went backwards is a wrap or a reset, not negative paging. Such a window
+        // is left unmeasured rather than reported, which is the same distinction the frame and
+        // queue channels make between "no evidence" and "evidence of zero".
+        if (pagingAt > 0 && elapsed >= 1 && elapsed <= 120 && majorFaults >= prevMajorFaults &&
+            swapIn >= prevSwapIn && fileRefault >= prevFileRefault) {
+            s.majorFaults = (majorFaults - prevMajorFaults) / elapsed;
+            s.swapIn = (swapIn - prevSwapIn) / elapsed;
+            s.fileRefault = (fileRefault - prevFileRefault) / elapsed;
+            s.pagingValid = true;
+        }
+        prevMajorFaults = majorFaults; prevSwapIn = swapIn; prevFileRefault = fileRefault;
+        pagingAt = s.at;
+    }
     if (finishWindow) frames.finish(s, cap);
     if (refresh) {
         std::string nextApp;
@@ -547,6 +596,23 @@ bool Actuator::verified() const {
 }
 bool Actuator::apply(Action action, const Constraints& limits) {
     failureAxis = -1;
+    // Re-read the baseline of every node we do NOT currently own. `original` was captured once,
+    // at daemon start, from a live sysfs read -- and on this device scaling_min_freq is raised
+    // transiently by Samsung's top-app QoS boost, so starting the daemon at the wrong moment
+    // froze a boosted floor as "factory". Two things went wrong from that: every level below the
+    // stale value became a no-op, which is how the big cluster stopped responding to the search
+    // at all (journal captured original=1920000 where the module's own snapshot says 533000),
+    // and restore() would have handed that boosted value back on the way out. A node we hold is
+    // untouched here: its baseline lives in the journal, which is what restore actually reads.
+    for (auto& n : nodes) {
+        if (journal.count(n.path)) continue;
+        long live = static_cast<long>(number(readText(n.path, 64), -1));
+        if (live > 0) n.original = live;
+        if (!n.maxPath.empty() && !journal.count(n.maxPath)) {
+            long liveMax = static_cast<long>(number(readText(n.maxPath, 64), -1));
+            if (liveMax > 0) n.maxOriginal = liveMax;
+        }
+    }
     for (const auto& n : nodes) {
         if (!limits.allowed[n.axis]) continue;
         failureAxis = n.axis;
@@ -563,7 +629,16 @@ bool Actuator::apply(Action action, const Constraints& limits) {
             for (auto x : n.table) if (x <= cap) table.push_back(x);
             if (table.empty()) return false;
             // Raise only floors, bounded by the CURRENT cooling/QoS cap. Never pin min==max.
-            double fraction = n.axis == 2 ? level * .18 : level * .15;
+            // The levels span the whole reachable table. At .15 per level the top of the search
+            // asked for 60% of the table (.72 on MIF), which on this device sits BELOW the floors
+            // the static profile has already written -- balanced leaves the big cluster at 2016000
+            // and the GPU at 650000, while level 4 could only ask for 1536000 and 650000. Since a
+            // floor is only ever raised, every level then resolved to the value already in place:
+            // 4000 windows of search over an action space that could not move the hardware, and an
+            // empty restoration journal to prove no write had ever been made. The min==max
+            // invariant is held by the cap guard below, not by leaving the top of the range
+            // unreachable.
+            double fraction = level / double(Levels - 1);
             if (n.axis == 1 && limits.tier == Tier::Powersave) fraction = 0;
             auto index = static_cast<size_t>(fraction * (table.size() - 1));
             desired = level == 0 ? std::min(n.original, cap) : std::max(n.original, table[index]);

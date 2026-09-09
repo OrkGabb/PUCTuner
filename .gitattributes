@@ -10,6 +10,8 @@
 *.cpp text eol=lf
 *.hpp text eol=lf
 *.h text eol=lf
+# Tools that feed shell text to the device over adb; a CRLF here reaches /system/bin/sh
+*.py text eol=lf
 gradlew text eol=lf
 
 # Windows batch files

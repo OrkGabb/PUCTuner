@@ -38,6 +38,15 @@ struct Observation {
     // understates it, because a hot thread that migrates shows as a moderate load on several
     // cores instead of a pinned one; only the per-thread figure catches that.
     double cpuPeak = 0, threadPeak = 0;
+    // Paging, as rates per second over the window, from /proc/vmstat. Measured and exported,
+    // never in the objective -- the same terms the queue channel is on. The reason it needs its
+    // own channel at all is that `memPsi` cannot see this pathology: a zram refault is an lz4
+    // decompression of tens of microseconds, so it spends CPU rather than stalling on memory,
+    // and PSI memory read avg10=0.00 on this device through 618 major faults and 14 500 file
+    // refaults a second. Whether that costs frames HERE is a question for the collected windows,
+    // not for a weight picked in advance.
+    double majorFaults = 0, swapIn = 0, fileRefault = 0;
+    bool pagingValid = false;
     double temp = 0, batteryTemp = 0, trend = 0, watts = 0, energy = 0;
     double p95 = 0, jank = 0;
     // Presentation intervals actually counted, independent of controller mode and poll timing.
@@ -121,10 +130,14 @@ bool demanding(const Observation& s);
 // the engine may ACT, which is a separate permission.
 bool measurable(const Observation& s);
 
-using Features = std::array<double, 25>;
+using Features = std::array<double, 27>;
 // Feature count before the regime channels were added. Weight k kept its meaning across that
 // change, so an older brain loads by zero-padding instead of being thrown away.
 constexpr size_t LegacyFeatures = 20;
+// Same argument, one migration later: the width before the paging channels. Every weight index
+// below this kept its meaning, so a brain saved at that width is read narrow and zero-padded,
+// and 4000 windows of measured physics survive the schema change.
+constexpr size_t PagingFreeFeatures = 25;
 
 struct Experience {
     unsigned count = 0;
