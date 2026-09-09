@@ -1,0 +1,17 @@
+# Auto detect text files and perform LF normalization
+* text=auto
+
+# Linux scripts, Magisk files, and Android engine files must always use LF
+*.sh text eol=lf
+*.bash text eol=lf
+*.lua text eol=lf
+*.prop text eol=lf
+*.c text eol=lf
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.h text eol=lf
+gradlew text eol=lf
+
+# Windows batch files
+*.bat text eol=crlf
+*.cmd text eol=crlf

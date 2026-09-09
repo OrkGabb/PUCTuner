@@ -1,0 +1,31 @@
+# Gradle
+.gradle/
+build/
+app/build/
+.kotlin/
+
+# Local configuration
+local.properties
+.idea/
+*.iml
+
+# Native build artifacts
+build/
+
+# Release archives
+*.apk
+*.zip
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+
+# External reference materials
+.reference/
+
+

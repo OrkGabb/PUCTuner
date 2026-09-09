@@ -1,0 +1,37 @@
+#!/sbin/sh
+##########################################################################################
+# M54 Tuner module installer (Magisk/KernelSU-compatible).
+# The KSU/Axeron manager normally extracts the zip and runs customize.sh directly; this
+# stub is the fallback path (recovery / Magisk flash). It loads whichever util_functions.sh
+# is present, then hands off to the standard install_module flow (which sources customize.sh).
+##########################################################################################
+umask 022
+
+OUTFD=$2
+ZIPFILE=$3
+
+ui_print() { echo "$1"; }
+
+# Load the platform's install helpers (KernelSU Next, then Magisk).
+mount /data 2>/dev/null
+for uf in /data/adb/ksu/bin/util_functions.sh /data/adb/ksud/util_functions.sh /data/adb/magisk/util_functions.sh; do
+  if [ -f "$uf" ]; then . "$uf"; break; fi
+done
+
+if type install_module >/dev/null 2>&1; then
+  install_module
+  exit 0
+fi
+
+# Last-resort minimal install if no helper was found: extract to a temp dir and run customize.sh.
+ui_print "- Instalador nativo não encontrado; usando fallback mínimo."
+TMPDIR=/dev/tmp
+rm -rf "$TMPDIR"; mkdir -p "$TMPDIR"
+unzip -o "$ZIPFILE" -d "$TMPDIR" >/dev/null 2>&1
+MODID=$(grep_prop id "$TMPDIR/module.prop" 2>/dev/null || grep '^id=' "$TMPDIR/module.prop" | cut -d= -f2)
+MODPATH=/data/adb/modules_update/$MODID
+rm -rf "$MODPATH"; mkdir -p "$MODPATH"
+cp -af "$TMPDIR"/* "$MODPATH"/
+[ -f "$MODPATH/customize.sh" ] && . "$MODPATH/customize.sh"
+ui_print "- Instalado em $MODPATH (ativa no próximo boot/estabelecimento do root)."
+exit 0

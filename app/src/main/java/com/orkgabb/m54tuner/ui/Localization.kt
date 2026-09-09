@@ -1,0 +1,557 @@
+package com.orkgabb.m54tuner.ui
+
+import androidx.compose.runtime.compositionLocalOf
+
+enum class AppLanguage(val code: String) {
+    PT_BR("pt-BR"),
+    EN("en"),
+}
+
+val LocalAppLanguage = compositionLocalOf { AppLanguage.PT_BR }
+
+/**
+ * The UI predates Android resources and its explanatory copy is composed from many dynamic
+ * fragments. Keep one translation boundary while that copy is migrated incrementally to resource
+ * IDs. Long replacements run before labels so sentences are not broken by a shorter match.
+ */
+fun localize(text: String, language: AppLanguage): String {
+    if (language == AppLanguage.PT_BR || text.isEmpty()) return text
+    var out = text
+    for ((pt, en) in EN_REPLACEMENTS) out = out.replace(pt, en, ignoreCase = false)
+    return out
+}
+
+private val EN_REPLACEMENTS = listOf(
+    // --- Dialogs, notices & confirmations (exact full sentences) ---
+    "Desativa o throttling térmico de CPU e GPU. O aparelho esquentará mais sob carga alta." to "Disables thermal throttling for CPU and GPU. Device will run hotter under heavy load.",
+    "Reinicia o SurfaceFlinger (a tela piscará). Afeta jogos com suporte a 120 Hz." to "Restarts SurfaceFlinger (screen will blink). Affects games supporting 120 Hz.",
+    "Alternar o backend exige reiniciar o SurfaceFlinger (a tela pisca). O backend Vulkan é experimental no driver Mali." to "Switching backend requires restarting SurfaceFlinger (screen blinks). Vulkan backend is experimental on Mali driver.",
+    "A tela apagará por alguns segundos para reiniciar o compositor de tela." to "The screen will turn off for a few seconds to restart the display compositor.",
+    "Reinicia a interface do sistema para aplicar propriedades de ART. O kernel e root continuam ativos." to "Restarts the system UI to apply ART properties. Kernel and root remain active.",
+    "O swap será recriado mantendo os 4 GB de fábrica. Memória em cache será liberada se necessário." to "Swap will be recreated preserving stock 4 GB. Cached memory will be freed beforehand if needed.",
+    "Compila os jogos selecionados com o perfil de compilação ART escolhido." to "Compiles selected games with chosen ART compilation profile.",
+    "Restaura a compilação padrão (speed-profile) dos jogos selecionados." to "Restores default compilation (speed-profile) for selected games.",
+    "Fecha apps em segundo plano para liberar memória ao aplicar o perfil Game." to "Closes background apps to free memory when applying Game profile.",
+    "Esta alteração muda o contexto do motor. O aprendizado anterior é preservado e reutilizado ao retornar à configuração." to "This change switches the engine context. Previous learning is preserved and reused when returning to this configuration.",
+    "Compilar os jogos" to "Compile games",
+    "Reverter a compilação" to "Reset compilation",
+    "Alterar contexto de aprendizado?" to "Switch learning context?",
+    "Aplicar alteração" to "Apply change",
+    "Continuar mesmo assim" to "Continue anyway",
+    "Continuar" to "Continue",
+    "Entendo, ativar" to "I understand, enable",
+    "Ativar" to "Enable",
+
+    // --- Tab 0: Motor (Engine) & Live Telemetry ---
+    "Controle automático" to "Automatic control",
+    "Aprendizado contínuo durante o uso normal." to "Continuous learning during normal use.",
+    "O motor ajusta o hardware em tempo real com base na demanda, minimizando latência, consumo e calor." to "The engine tunes hardware in real time based on demand, minimizing latency, power and heat.",
+    "Permite ao motor ajustar o rastreamento de carga da CPU." to "Allows the engine to tune CPU load tracking.",
+    "Ajustes sinalizados alteram o contexto de aprendizado do motor." to "Flagged adjustments change the engine learning context.",
+    "Medições do motor" to "Engine measurements",
+    "Resultados observados no dispositivo" to "Results observed on the device",
+    "estão em modo somente-leitura. Execute scripts/unlock_nodes.sh --apply para destravar." to "are read-only. Run scripts/unlock_nodes.sh --apply to unlock.",
+    "Métricas observadas em tempo real dos sensores do hardware." to "Metrics observed in real time from hardware sensors.",
+    "Clock fixado indica boost temporário de primeiro plano da Samsung." to "Fixed clock indicates Samsung temporary foreground boost.",
+    "A largura de banda da DRAM define o limite de quadros sustentado pelo SoC." to "DRAM bandwidth defines the sustained frame ceiling of the SoC.",
+    "Políticas térmicas (proteção da bateria permanece sempre ativa)" to "Thermal policies (battery protection is always active)",
+    "Desativa restrições em segundo plano e economia adaptativa da OneUI." to "Disables One UI background restrictions and adaptive power saving.",
+
+    // --- Tab 1 & Tab 2: GPU & Render ---
+    "Controle de clocks da GPU" to "GPU clock control",
+    "Frequências gerenciadas pelo motor adaptativo" to "Frequencies managed by the adaptive engine",
+    "Valores lidos diretamente de /sys/kernel/gpu. O motor ajusta a faixa operacional dinamicamente." to "Values read directly from /sys/kernel/gpu. The engine adjusts the operating range dynamically.",
+    "Propriedade global do renderizador de interface." to "Global property of the UI renderer.",
+    "Propriedade global. SkiaGL é o padrão de fábrica; SkiaVK é experimental no driver Mali." to "Global property. SkiaGL is stock default; SkiaVK is experimental on Mali driver.",
+    "Compositor do Android (mudanças pendentes até confirmação)" to "Android compositor (changes pending until confirmation)",
+    "O SurfaceFlinger requer backends threaded. Padrão: SkiaGL thr." to "SurfaceFlinger requires threaded backends. Default: SkiaGL thr.",
+    "Reinicie o compositor para ativar as alterações (a tela pisca)." to "Restart compositor to apply changes (the screen blinks).",
+    "Reinicia a interface do sistema para aplicar propriedades de ART." to "Restarts system UI to apply ART properties.",
+    "Trocar o algoritmo recria o swap mantendo os 4 GB de fábrica. Libera memória antes se necessário." to "Changing the algorithm recreates swap keeping stock 4 GB. Frees memory beforehand if needed.",
+
+    // --- Tab 4: Apps ---
+    "Inicia apps sem atraso de fork e pré-carregamento." to "Starts apps without fork and preload delay.",
+    "Consome 2 a 4 processos ociosos em RAM." to "Uses 2 to 4 idle processes in RAM.",
+    "Compilação em segundo plano usa apenas núcleos eficientes (cpu0-3)." to "Background compilation uses only efficient cores (cpu0-3).",
+    "Instalações e atualizações de apps demoram mais." to "App installs and updates take longer.",
+    "Aumenta o limite de heap para evitar coletas de lixo frequentes." to "Increases heap limit to avoid frequent garbage collection.",
+    "Aumenta levemente o consumo de RAM de todos os apps." to "Slightly increases RAM usage for all apps.",
+    "Fecha apps em segundo plano ao ativar o Game, mantendo o cache em disco." to "Closes background apps when activating Game, keeping disk cache.",
+    "Apps fechados precisarão reiniciar do zero." to "Closed apps will need to restart from scratch.",
+    "Adiciona os pacotes à tabela MARs_ExcludeTarget contra suspensão." to "Adds packages to MARs_ExcludeTarget table to prevent suspension.",
+    "Desativa o gerenciador de processos em segundo plano da Samsung." to "Disables Samsung background process manager.",
+    "Desativa as políticas 1 e 8 de encerramento do MARs." to "Disables MARs kill policies 1 and 8.",
+    "Mantém o oom_score_adj prioritário contra o encerramento pelo kernel." to "Keeps oom_score_adj prioritized against kernel termination.",
+    "Protege processos contra o finalizador de memória do kernel. Políticas internas do sistema podem ignorar a pontuação." to "Protects processes against the kernel memory killer. Internal system policies may ignore the score.",
+
+    // --- Tab 5: Lab ---
+    "Controle manual do motor: Ativo (com aprendizado), Observar (sem aplicar) ou Parar." to "Manual engine control: Active (with learning), Observe (without applying) or Stop.",
+    "Ferramentas de diagnóstico" to "Diagnostic tools",
+    "Compara combinações de PELT e EAS com frame times reais." to "Compares PELT and EAS combinations with real frame times.",
+    "Experimento de ~9 minutos comparando combinações de PELT e EAS. Restaura as configurações ao finalizar." to "Experiment of ~9 minutes comparing PELT and EAS combinations. Restores settings when finished.",
+
+    "Backend do RenderEngine" to "RenderEngine backend",
+    "Trocar o backend de composição exige reiniciar o SurfaceFlinger (tela pisca). O app grava a prop agora e pergunta antes de reiniciar. O caminho Vulkan é experimental neste driver Mali: em uso real deu piscadas pretas em transições, YouTube Shorts e multitarefa, e tela preta com crash no NTE." to "Changing the composition backend requires restarting SurfaceFlinger (screen blinks). The app writes the prop now and asks before restarting. The Vulkan path is experimental on this Mali driver: in real use it produced black flickers in transitions, YouTube Shorts and multitasking, and black screen with crash in NTE.",
+    "O SurfaceFlinger do Android 16 recusa backend não-threaded, então só estes dois valem. De fábrica é o GLES (Ganesh) — e foi com o Vulkan ligado aqui que apareceram as piscadas pretas na composição." to "Android 16's SurfaceFlinger rejects non-threaded backends, so only these two are valid. Stock is GLES (Ganesh) — and with Vulkan enabled here, black composition flickers were observed.",
+    "Continuar mesmo assim" to "Continue anyway",
+    "Destravar 120fps em jogos" to "Unlock 120fps in games",
+    "Destravar 120fps" to "Unlock 120fps",
+    "Precisa reiniciar o SurfaceFlinger para valer — a tela apaga e volta. Só afeta jogos que suportam 120 Hz." to "Requires restarting SurfaceFlinger to take effect — the screen goes black and returns. Only affects games that support 120 Hz.",
+    "RenderEngine ativo agora" to "RenderEngine active now",
+    "Reiniciar o SurfaceFlinger" to "Restart SurfaceFlinger",
+    "A tela vai apagar e voltar em alguns segundos. Nada é perdido, mas apps em tela cheia podem ser redesenhados." to "The screen will turn off and return in a few seconds. Nothing is lost, but fullscreen apps may be redrawn.",
+    "Reinício leve (zygote)" to "Soft reboot (zygote)",
+    "Reinicia o framework: o zygote, o system_server, a interface e todos os apps abertos sobem de novo — os apps fecham. NÃO é um reboot: o kernel, o root e todo o tuning de sysfs continuam de pé. É o que faz as props de ART valerem e o Zygisk reinjetar." to "Restarts the framework: zygote, system_server, UI and all open apps launch again — apps close. It is NOT a reboot: kernel, root and all sysfs tuning remain active. This applies ART props and reinjects Zygisk.",
+    "Reiniciar interface" to "Restart UI",
+    "Trocar o algoritmo do zram" to "Change zram algorithm",
+    "O swap será esvaziado e recriado (swapoff/mkswap/swapon), mantendo os 4 GB da Samsung. Se a RAM livre não cobrir o que está no swap, o módulo abre espaço antes: limpa o cache de páginas e encerra os apps em segundo plano (o M54 Tuner, em primeiro plano, não é afetado). Só desiste se nem assim couber." to "Swap will be emptied and recreated (swapoff/mkswap/swapon), keeping Samsung's 4 GB disksize. If free RAM cannot hold current swap contents, the module makes room first: drops page cache and terminates background apps (M54 Tuner in foreground is unaffected). It only gives up if it still does not fit.",
+    "Limpar RAM ao ativar o Game" to "Clear RAM when activating Game",
+    "Toda vez que o perfil Game for aplicado: encerra apenas os apps em cache ou segundo plano; o page cache do sistema é preservado. O M54 Tuner em primeiro plano e os serviços do sistema não são afetados. Apps encerrados reabrem do zero da próxima vez. Roda uma vez por ativação, nunca em loop." to "Whenever Game profile is applied: terminates only cached or background apps; system page cache is preserved. M54 Tuner in foreground and system services are unaffected. Closed apps start fresh next time. Runs once per activation, never in a loop.",
+    "Térmico agressivo" to "Aggressive thermal",
+    "Desliga o throttling das zonas de CPU e GPU. O aparelho vai esquentar mais e, a longo prazo, isso desgasta a bateria. A zona da bateria continua ativa. Aviso mostrado uma só vez." to "Disables throttling on CPU and GPU zones. The device will run hotter and, over the long term, this wears the battery. The battery zone remains active. Warning shown only once.",
+    "Entendo, ativar" to "I understand, enable",
+    "Só o SF lê estas — mudança fica pendente até você confirmar." to "Only SF reads these — changes remain pending until you confirm.",
+    "serão parados ao mudar o render." to "will be stopped when changing renderer.",
+    "O motor mede a demanda, testa ajustes quando permitido e aprende com os resultados. O objetivo é atender à demanda com menos atraso, consumo e calor. Você não precisa informar se está jogando ou usando outro aplicativo." to "The engine measures demand, tests adjustments when permitted and learns from the results. Its objective is to serve demand with less delay, energy use and heat. You do not need to say whether you are gaming or using another app.",
+    "Contagem desta execução: quando a resposta medida contradiz o modelo, ele reduz a confiança nas previsões daquele contexto e volta a testar alternativas." to "Count for this run: when measured response contradicts the model, it reduces confidence in that context's predictions and revisits alternatives.",
+    "Este experimento pausa o motor e o aprendizado por cerca de 9 minutos. Compara seis combinações enquanto você usa um aplicativo que renderiza. Os resultados ficam no diagnóstico; não treinam o motor nem instalam um vencedor. Ao terminar, restaura os ajustes e retoma o funcionamento anterior." to "This experiment pauses the engine and learning for about 9 minutes. It compares six combinations while you use an app that renders frames. Results remain in diagnostics; they do not train the engine or install a winner. On completion it restores settings and resumes the previous operation.",
+    "Observar calcula propostas sem aplicar nem aprender. Parar restaura os ajustes do motor. Retomar volta ao controle automático com aprendizado ativo." to "Observe calculates proposals without applying or learning. Stop restores the engine's adjustments. Resume returns to automatic control with learning enabled.",
+    "A meta de FPS é um limite máximo. O motor mede a cadência real de cada aplicativo." to "The FPS target is an upper limit. The engine measures each app's actual cadence.",
+    "O aprendizado automático está pausado por uma configuração de diagnóstico." to "Automatic learning is paused by a diagnostic setting.",
+    "Retomar aprendizado automático" to "Resume automatic learning",
+    "Aprendizado automático ativo" to "Automatic learning active",
+    "Um objetivo, aprendizado durante o uso normal." to "One objective, learning during normal use.",
+    "Ferramentas de diagnóstico; dispensáveis no uso normal." to "Diagnostic tools; not needed for normal use.",
+    "Mudanças de resposta detectadas" to "Response changes detected",
+    "Pausar motor e medir (~9 min)" to "Pause engine and measure (~9 min)",
+    "Controle automático" to "Automatic control",
+    "Laboratório" to "Laboratory",
+    "aba Motor" to "Engine tab",
+    "Retomar" to "Resume",
+    "Motor" to "Engine",
+    "Parar" to "Stop",
+    "Prioridades e controle automático" to "Priorities and automatic control",
+    "Medições · somente leitura" to "Measurements · read-only",
+    "Ajustes manuais" to "Manual settings",
+    "Experimentos" to "Experiments",
+    "Esta alteração muda o contexto usado pelo motor. Ele pode precisar de novas medições para esta configuração. O aprendizado anterior e os contadores totais não são apagados. Ao voltar à configuração anterior, os contextos ainda guardados podem ser reutilizados." to "This change switches the context used by the engine. It may need new measurements for this configuration. Previous learning and total counters are not erased. Returning to the previous configuration can reuse contexts that are still stored.",
+    "Os ajustes marcados pedem confirmação antes de mudar o contexto. Limite adaptativo e companheiro fas-rs também o alteram, mas são apenas leitura nesta tela. PELT muda os eixos disponíveis. Zram, ART, renderizador e listas não mudam a identidade da configuração, mas podem afetar a carga, o consumo e a fluidez." to "Marked settings ask for confirmation before switching context. The adaptive limit and fas-rs companion also change it, but are read-only here. PELT changes the available axes. Zram, ART, renderer and lists do not change configuration identity, but may affect load, energy use and smoothness.",
+    "Janelas, amostras e contextos são totais da memória guardada; a confiança é do avaliador compartilhado." to "Windows, samples and contexts are totals across stored memory; confidence belongs to the shared critic.",
+    "Com o controle adaptativo ativo, o motor ajusta a janela da GPU conforme as medições. Se o fas-rs estiver ativo, ele controla CPU/GPU. Os valores desta aba são apenas leitura." to "With adaptive control active, the engine adjusts the GPU window using measurements. If fas-rs is active, it controls CPU/GPU. Values in this tab are read-only.",
+    "Leitura · resultados observados no aparelho" to "Read-only · results observed on the device",
+    "Leitura · controle automático" to "Read-only · automatic control",
+    "Limite adaptativo · leitura" to "Adaptive limit · read-only",
+    "Companheiro fas-rs · leitura" to "fas-rs companion · read-only",
+    "Alterar contexto de aprendizado?" to "Switch learning context?",
+    "Aplicar alteração" to "Apply change",
+    "Muda o contexto" to "Changes context",
+    "Medições do motor" to "Engine measurements",
+    "Permite ao controlador ajustar o rastreamento de carga global da CPU. Desligar retira esse eixo da busca." to "Allows the controller to adjust global CPU load tracking. Disabling removes this axis from the search.",
+    "Ajuste PELT" to "PELT adjustment",
+    "Aprende por aplicativo para reduzir atrasos de frames dentro do limite térmico." to "Learns per app to reduce late frames within thermal limits.",
+    "Equilibra fluidez e energia usando resultados observados nesta carga." to "Balances smoothness and energy using observed workload results.",
+    "Busca menor custo de energia com meta de fluidez e CPU dinâmica." to "Seeks lower energy cost with a smoothness target and dynamic CPU.",
+    "Atualiza a memória somente após medir um ajuste aplicado e verificado." to "Updates memory only after measuring an applied and verified adjustment.",
+    "Sem frames válidos, o motor libera os ajustes. A memória não contabiliza simulações como treino." to "Without valid frames, the engine releases adjustments. Simulations never count as training.",
+    "Cada janela estável treina o avaliador; só uma mudança aplicada e medida vira amostra. A reserva térmica cai apenas com o aparelho já quente e reabastece frio ou ocioso. Simulações nunca viram treino." to "Every stable window trains the critic; only an applied, measured change becomes a sample. The thermal allowance is drawn down only while the phone is already warm and refills when cool or idle. Simulations never become training.",
+    "Contextos medidos" to "Measured contexts",
+    "Janelas medidas sem controlar" to "Windows measured while not in control",
+    "Renderizando · atraso de frame" to "Rendering · frame lateness",
+    "Sem frames · espera por recurso" to "No frames · waiting on a resource",
+    "Sem medida utilizável" to "No usable measurement",
+    "Demanda não atendida" to "Unserved demand",
+    "Cenário medido" to "Measured scenario",
+    "Janela creditada ao avaliador; sem amostra de ajuste" to "Window credited to the critic; no adjustment sample",
+    "Ocioso: revisando janelas já medidas" to "Idle: rehearsing already measured windows",
+    "Snapshot ausente. O motor adaptativo mantém sua própria captura reversível da sessão." to "Snapshot unavailable. The adaptive engine keeps its own reversible session capture.",
+    "O fas-rs é opcional. Quando ativo, possui CPU/GPU; o M54 respeita essa divisão." to "fas-rs is optional. When running, it owns CPU/GPU; M54 respects this ownership.",
+    "fas-rs controla CPU/GPU; M54 ajusta barramento e I/O." to "fas-rs controls CPU/GPU; M54 tunes the memory bus and I/O.",
+    "Restaura o snapshot capturado antes dos ajustes." to "Restores the snapshot captured before tuning.",
+    "MCTS · memória local por aplicativo e perfil" to "MCTS · local memory per app and profile",
+    "Observação: propostas sem aplicação nem treino" to "Observation: proposals without applying or training",
+    "Ajuste recusado ou alterado por outro controlador" to "Adjustment rejected or changed by another controller",
+    "Proteção térmica ou sensor indisponível" to "Thermal protection or unavailable sensor",
+    "Amostra descartada por mudança de contexto" to "Sample rejected due to context change",
+    "Avaliando resultados e próximos ajustes" to "Evaluating results and next adjustments",
+    "Tela ociosa; ajustes liberados" to "Idle screen; adjustments released",
+    "Aguardando aplicação em andamento" to "Waiting for current apply operation",
+    "Aguardando estabilização" to "Waiting for stabilization",
+    "Aguardando frames recentes" to "Waiting for recent frames",
+    "Aguardando inicialização" to "Waiting for startup",
+    "Parado; ajustes restaurados" to "Stopped; adjustments restored",
+    "Restauração pendente" to "Restore pending",
+    "Pausado durante benchmark" to "Paused during benchmark",
+    "Estimativa por carga e clocks" to "Estimate from load and clocks",
+    "Amostras reais aceitas" to "Accepted real samples",
+    "nó(s) de ajuste estão em modo somente-leitura, provavelmente travados por outro módulo. O M54 Tuner perde essas capacidades em silêncio até serem destravados: rode scripts/unlock_nodes.sh --apply." to "tuning node(s) are read-only, most likely locked by another module. M54 Tuner loses those capabilities silently until they are unlocked: run scripts/unlock_nodes.sh --apply.",
+    "Confiança do avaliador" to "Critic confidence",
+    "Thread mais quente" to "Hottest thread",
+    "Cadência medida" to "Measured cadence",
+    "Espera por CPU" to "Waiting for CPU",
+    "de um núcleo" to "of one core",
+    "(teto " to "(cap ",
+    "· pico " to "· peak ",
+    "teto nível" to "level cap",
+    "Janelas aprendidas" to "Windows learned",
+    "Reserva térmica" to "Thermal allowance",
+    "Controle adaptativo" to "Adaptive control",
+    "Aprendizado local" to "Local learning",
+    "Limite adaptativo" to "Adaptive limit",
+    "Dono de CPU/GPU" to "CPU/GPU owner",
+    "Controlador" to "Controller",
+    "Aplicativo" to "Application",
+    "Meta de FPS" to "Target FPS",
+    "Observar" to "Observe",
+    "Ativo" to "Active",
+    "Energia" to "Energy",
+    // Explanations and warnings — longest fragments first.
+    "Sem root. Autorize o app no KernelSU e toque para tentar de novo." to
+        "No root access. Authorize the app in KernelSU and tap to try again.",
+    "Módulo não instalado — flasheie m54tuner-module.zip no KernelSU." to
+        "Module not installed — flash m54tuner-module.zip in KernelSU.",
+    "Snapshot de fábrica ausente: 'Balanceado' não restaura. Rode uma vez num boot limpo." to
+        "Factory snapshot missing: Balanced cannot restore stock. Run once after a clean boot.",
+    "fas-rs detectado: o Game cede o DVFS de CPU a ele." to
+        "fas-rs is running: Game delegates CPU DVFS to it.",
+    "fas-rs instalado, mas o daemon está parado — modo companheiro inativo." to
+        "fas-rs is installed, but its daemon is stopped — companion mode is inactive.",
+    "fas-rs não instalado — sem efeito por enquanto." to
+        "fas-rs is not installed — no effect for now.",
+    "fas-rs decide o DVFS; aqui vão GPU, MIF, I/O, PELT e térmico." to
+        "fas-rs controls DVFS; this profile handles GPU, MIF, I/O, PELT and thermal settings.",
+    "Piso alto de CPU/GPU/MIF, PELT 2×, I/O mq-deadline, fila e readahead maiores." to
+        "Higher CPU/GPU/MIF floors, 2× PELT, mq-deadline I/O and larger queue/readahead.",
+    "Restaura o snapshot de fábrica capturado num boot limpo." to
+        "Restores the factory snapshot captured after a clean boot.",
+    "Sem travar a CPU: economiza no teto da GPU, no idle e no I/O." to
+        "Keeps CPU dynamic; saves power through the GPU ceiling, idle states and I/O.",
+    "Eixo separado do perfil. A zona da bateria nunca é desligada." to
+        "Independent from the profile. The battery thermal zone is never disabled.",
+    "No modo agressivo, restaura o throttle automaticamente por temperatura ou após 15 minutos." to
+        "In aggressive mode, restores throttling automatically by temperature or after 15 minutes.",
+    "O governor de fábrica só sobe a DRAM com 90% de ocupação do barramento a 1352 MHz " to
+        "The factory governor only raises DRAM at 90% bus load at 1352 MHz ",
+    "e 97% a 1794 MHz, então um jogo quase nunca chega lá. O piso é o único lever " to
+        "and 97% at 1794 MHz, so games rarely reach it. The floor is the only control ",
+    "que gruda: o kernel tem um modo de boost, mas ele se desfaz sozinho em 10 s." to
+        "that persists: the kernel boost mode resets itself after 10 seconds.",
+    "Cada ajuste custa só o reinício que ele realmente precisa." to
+        "Each setting pays only for the restart it actually needs.",
+    "O caminho Vulkan é experimental neste driver Mali: em uso real deu piscadas " to
+        "The Vulkan path is experimental on this Mali driver: real use produced black flashes ",
+    "pretas em transições, YouTube Shorts e multitarefa, e tela preta com crash no NTE." to
+        "during transitions, YouTube Shorts and multitasking, plus an NTE black-screen crash.",
+    "O SurfaceFlinger do Android 16 recusa backend não-threaded, então só estes dois " to
+        "Android 16 SurfaceFlinger rejects non-threaded backends, so only these two ",
+    "valem. De fábrica é o GLES (Ganesh) — e foi com o Vulkan ligado aqui que " to
+        "are valid. Stock is GLES (Ganesh); Vulkan was enabled when ",
+    "apareceram as piscadas pretas na composição." to
+        "the black composition flashes appeared.",
+    "A prop é global; a lista abaixo só define quem é fechado para reler agora." to
+        "This property is global; the list only chooses which apps restart to reload it now.",
+    "Remove o teto de 60 do Game Booster no painel de 120 Hz." to
+        "Removes the Game Booster 60 FPS cap on the 120 Hz panel.",
+    "Precisa reiniciar o SurfaceFlinger para valer — a tela apaga e volta. Só afeta jogos " to
+        "Requires a SurfaceFlinger restart — the screen briefly turns off. Only affects games ",
+    "que suportam 120 Hz." to "that support 120 Hz.",
+    "Trocar o algoritmo esvazia o swap. Faltando RAM, o módulo limpa cache e fecha apps " to
+        "Changing the algorithm empties swap. If RAM is low, the module reclaims memory and closes ",
+    "de segundo plano antes de tentar — nunca recusa sem tentar abrir espaço." to
+        "background apps before trying — it first attempts to make room.",
+    "A Samsung reconstrói como lzo-rle todo boot; o módulo reaplica a sua escolha." to
+        "Samsung rebuilds zram as lzo-rle on every boot; the module reapplies your choice.",
+    "O app abre sem esperar fork+preload — é a fatia da abertura que o fas-rs não alcança." to
+        "Apps open without waiting for fork+preload — the part of startup fas-rs cannot optimize.",
+    "Play Store e ART service compilam em cpu0-3, sem roubar os A78 durante o jogo." to
+        "Play Store and ART Service compile on cpu0-3 without taking the A78 cores from a game.",
+    "Instalar e atualizar app fica mais lento: 4 núcleos pequenos em vez de 8." to
+        "Installing and updating apps becomes slower: four small cores instead of eight.",
+    "Apps pesados chegam ao GC forçado menos vezes." to
+        "Heavy apps hit forced garbage collection less often.",
+    "Vale para TODO app, então a pressão de RAM sobe um pouco. Ganho pequeno." to
+        "Applies to every app, so memory pressure rises slightly. The gain is small.",
+    "Elimina o jank de JIT. Leva minutos e ocupa espaço — ação explícita." to
+        "Reduces JIT-related jank. Takes minutes and storage — explicit action only.",
+    "Encerra apenas apps em cache/segundo plano ao ativar o Game, preservando o " to
+        "Closes only cached/background apps when Game starts while preserving the ",
+    "page cache que evita releituras lentas do UFS." to
+        "page cache that avoids slow UFS rereads.",
+    "Apps que estavam em cache reabrem do zero da próxima vez. Roda uma vez por " to
+        "Cached apps cold-start next time. Runs once per ",
+    "ativação, nunca em loop." to "activation, never in a loop.",
+    "Detecta jogos selecionados em primeiro plano, aplica Game e reduz o boost de storage " to
+        "Detects selected foreground games, applies Game and reduces the storage boost ",
+    "após 45 s. Experimental até a validação com ADB." to
+        "after 45 seconds. Experimental until validated with ADB.",
+    "Insere cada app da lista de proteção na MARs_ExcludeTarget — a mesma tabela que o " to
+        "Adds each protected app to MARs_ExcludeTarget — the same table ",
+    "Device Care usa para \"apps que nunca dormem\". É o caminho oficial, e " to
+        "Device Care uses for never-sleeping apps. It is the official, ",
+    "cirúrgico: só os pacotes listados (cai para a lista de compilação se a de " to
+        "surgical path: only listed packages (falls back to the compile list if the ",
+    "proteção estiver vazia). Desligar remove só o que nós inserimos." to
+        "protection list is empty). Disabling removes only rows we inserted.",
+    "Gerenciador de processos da Samsung. Sistêmico, não por app — mais agressivo que a " to
+        "Samsung process manager. System-wide, not per-app — more aggressive than the ",
+    "isenção acima." to "exemption above.",
+    "As duas políticas que vêm ativas são as que matam. Desligar afeta todos os apps." to
+        "The two enabled policies terminate apps. Disabling them affects every app.",
+    "Reencrava o oom_score_adj deles a cada segundo, para o matador de memória do " to
+        "Re-pins their oom_score_adj every second so the kernel memory killer ",
+    "kernel escolher outra vítima (cai para a lista de compilação se a de proteção " to
+        "chooses another victim (falls back to the compile list if the protection ",
+    "estiver vazia)." to "list is empty).",
+    "Funciona contra o matador do KERNEL (foi ele que derrubou o ZZZ com 4 GB). Contra o " to
+        "Works against the KERNEL memory killer (which killed ZZZ at 4 GB). Against Samsung's ",
+    "AL_Kill da Samsung é aposta, não promessa: aquele é política do framework e pode " to
+        "AL_Kill this is an experiment, not a promise: it is framework policy and may ",
+    "ignorar a pontuação. Medido: ao ir para segundo plano o Android reescreve o valor " to
+        "ignore the score. Measured: Android rewrites it within one second after backgrounding, ",
+    "em menos de 1 s, e o vigia devolve no segundo seguinte — a janela existe." to
+        "and the watcher restores it on the next second — a race window exists.",
+    "Recarrega o framework: props de ART entram e o Zygisk reinjeta. Fecha os apps abertos." to
+        "Reloads the framework so ART properties apply and Zygisk reinjects. Closes open apps.",
+    "Vale a partir do próximo reinício leve — nada aqui muda um sistema já rodando." to
+        "Applies after the next soft restart — these settings cannot change a running framework.",
+    "O swap será esvaziado e recriado (swapoff/mkswap/swapon), mantendo os 4 GB da Samsung. " to
+        "Swap will be emptied and rebuilt (swapoff/mkswap/swapon), preserving Samsung's 4 GB. ",
+    "Se a RAM livre não cobrir o que está no swap, o módulo abre espaço antes: limpa o " to
+        "If free RAM cannot hold current swap usage, the module first makes room: it reclaims ",
+    "cache de páginas e encerra os apps em segundo plano (o M54 Tuner, em primeiro " to
+        "page cache and closes background apps (foreground M54 Tuner ",
+    "plano, não é afetado). Só desiste se nem assim couber." to
+        "is unaffected). It aborts only if memory is still insufficient.",
+    "Compila cada jogo da lista no modo ART selecionado. Leva minutos, esquenta e ocupa espaço. " to
+        "Compiles each listed game with the selected ART mode. Takes minutes, heat and storage. ",
+    "Reversível pelo botão Reverter." to "Reversible with the Reset button.",
+    "Volta os jogos ao perfil de compilação padrão do sistema (speed-profile)." to
+        "Returns games to the system default compilation profile (speed-profile).",
+
+    // Cards, controls and status.
+    "Verificando root…" to "Checking root…",
+    "Sem leitura — módulo indisponível." to "No data — module unavailable.",
+    "Sem leitura." to "No data.",
+    "Módulo não encontrado — nada foi aplicado." to "Module not found — nothing was applied.",
+    "Restaurado após o boot" to "Restored after boot",
+    "Perfil" to "Profile",
+    "Balanceado" to "Balanced",
+    "Economia" to "Power save",
+    "Nenhum" to "None",
+    "Fábrica" to "Factory",
+    "Ligado" to "On",
+    "Desligado" to "Off",
+    "Moderado" to "Moderate",
+    "Agressivo" to "Aggressive",
+    "Térmico" to "Thermal",
+    "Térmico moderado" to "Moderate thermal mode",
+    "Térmico agressivo" to "Aggressive thermal mode",
+    "Guardião térmico" to "Thermal guardian",
+    "Zonas CPU/GPU" to "CPU/GPU zones",
+    "throttle desligado" to "throttling disabled",
+    "aguardando o vigia" to "waiting for watcher",
+    "monitorando" to "monitoring",
+    "I/O e scheduler" to "I/O and scheduler",
+    "Medição PELT × EAS" to "PELT × EAS measurement",
+    "Compara 1×/2×/4× com EAS ligado e desligado usando frame times reais." to
+        "Compares 1×/2×/4× with EAS on and off using real frame times.",
+    "Jogue normalmente durante os seis cenários de cada rodada. A ordem é invertida " to
+        "Play normally through the six scenarios in each round. The order is reversed ",
+    "na segunda rodada para reduzir o efeito da cena e do aquecimento. O vencedor " to
+        "in the second round to reduce scene and thermal drift. The winner ",
+    "não é aplicado automaticamente; os valores anteriores sempre são restaurados." to
+        "is not applied automatically; the previous values are always restored.",
+    "Medir por ~9 minutos" to "Measure for ~9 minutes",
+    "Parar e restaurar" to "Stop and restore",
+    "Medição interrompida; valores restaurados." to "Measurement stopped; values restored.",
+    "Não foi possível interromper a medição." to "Could not stop the measurement.",
+    "Medição PELT/EAS iniciada — jogue normalmente por cerca de 9 minutos." to
+        "PELT/EAS measurement started — play normally for about 9 minutes.",
+    "Não foi possível iniciar a medição PELT/EAS." to "Could not start the PELT/EAS measurement.",
+    "Estado" to "Status",
+    "Quem decide a ordem das leituras" to "Controls read request ordering",
+    "Scheduler · Auto = preset do perfil" to "Scheduler · Auto = profile preset",
+    "Sistema de arquivos e ociosidade" to "Filesystem and idle states",
+    "Coleta de lixo do f2fs" to "f2fs garbage collection",
+    "Estado profundo de idle" to "Deep idle state",
+    "Escrita no lugar (ipu_policy)" to "In-place writes (ipu_policy)",
+    "nenhum" to "none",
+    "Barramento de memória" to "Memory interconnect",
+    "Largura de banda: o teto de fps sustentado" to "Bandwidth: the sustained FPS ceiling",
+    "Piso da DRAM (MIF) · Auto = preset do perfil" to "DRAM floor (MIF) · Auto = profile preset",
+    "Piso do barramento interno (INT)" to "Internal interconnect floor (INT)",
+    "Piso do barramento do display · sem preset, só manual" to "Display interconnect floor · manual only",
+    "DRAM agora" to "DRAM now",
+    "INT agora" to "INT now",
+    "Display agora" to "Display now",
+    "piso" to "floor",
+    "Janela" to "Window",
+    "Fila do disco e link UFS" to "Disk queue and UFS link",
+    "Link UFS" to "UFS link",
+    "clock gating" to "clock gating",
+    "ligado (230–340 µs para acordar)" to "enabled (230–340 µs wake-up)",
+    "desligado (acorda na hora)" to "disabled (instant wake-up)",
+    "piso do BIG durante I/O" to "BIG floor during I/O",
+    "ligado (de fábrica)" to "enabled (stock)",
+    "desligado" to "disabled",
+    "ligado" to "enabled",
+    "Samsung" to "Samsung",
+    "GOS e integração com o fas-rs" to "GOS and fas-rs integration",
+    "Game Optimizing Service" to "Game Optimizing Service",
+    "Ligado, a Samsung limita clocks por jogo. Desligar é reversível." to
+        "When enabled, Samsung limits clocks per game. Disabling is reversible.",
+    "Modo companheiro do fas-rs" to "fas-rs companion mode",
+    "Extensão API v4" to "API v4 extension",
+    "observadora carregada" to "observer loaded",
+    "Desligar os limitadores da OneUI" to "Disable One UI limiters",
+    "Modo de baixo calor, restrição de background por IA, \"restricted device " to
+        "Low heat mode, AI background restriction, restricted device ",
+    "performance\" e economia adaptativa — mais o boost de responsividade da " to
+        "performance and adaptive power saving — plus Samsung's responsiveness boost, ",
+    "própria Samsung, ligado. Reversível: os originais ficam guardados." to
+        "enabled. Reversible: original values are backed up.",
+    "Baixo calor" to "Low heat mode",
+    "Background por IA" to "AI background control",
+    "Boost de responsividade" to "Responsiveness boost",
+    "Economia adaptativa" to "Adaptive power saving",
+    "LIGADO (limita)" to "ON (limits performance)",
+    "LIGADA (mata apps)" to "ON (kills apps)",
+    "LIGADA" to "ON",
+    "GPU não legível." to "GPU unavailable.",
+    "Leitura direta de /sys/kernel/gpu" to "Direct reading from /sys/kernel/gpu",
+    "Clock atual" to "Current clock",
+    "ocioso (rail desligado)" to "idle (rail powered down)",
+    "Janela travada" to "Locked window",
+    "Governor ativo" to "Active governor",
+    "Barra = janela permitida · sólido = frequência atual" to "Bar = allowed window · solid = current frequency",
+    "Janela de clock" to "Clock window",
+    "Piso (gpu_min_clock)" to "Floor (gpu_min_clock)",
+    "Teto (gpu_max_clock)" to "Ceiling (gpu_max_clock)",
+    "Rampa e energia" to "Ramp and power",
+    "highspeed_load é o gatilho do salto de clock: menor = sobe antes." to
+        "highspeed_load triggers the clock jump: lower values ramp sooner.",
+    "O boost de OpenCL rouba clock de gráficos em jogos." to "OpenCL boost can take graphics clock from games.",
+    "Desativar CL boost" to "Disable CL boost",
+    "Uma explosão de efeitos é uma explosão de jobs de GPU. O tick do escalonador decide " to
+        "A burst of effects creates a burst of GPU jobs. The scheduler tick controls ",
+    "de quanto em quanto tempo ela reavalia o que rodar; os outros dois decidem quão " to
+        "how often work is reconsidered; the other two control how ",
+    "rápido o clock responde. Mexa em um de cada vez para saber qual resolveu." to
+        "quickly clocks respond. Change one at a time to identify the effect.",
+    "Voltar tudo para os presets do perfil" to "Restore all profile presets",
+    "Escopo de reinício" to "Restart scope",
+    "HWUI (renderer)" to "HWUI (renderer)",
+    "força parada dos apps escolhidos" to "force-stops selected apps",
+    "RenderEngine / 120fps" to "RenderEngine / 120 FPS",
+    "reinicia o SurfaceFlinger (tela pisca)" to "restarts SurfaceFlinger (screen blinks)",
+    "Perfil, GPU, I/O, térmico" to "Profile, GPU, I/O, thermal",
+    "nada reinicia" to "no restart",
+    "Apps afetados pelo render" to "Apps affected by renderer changes",
+    "Nenhum — as props só valerão quando o app for reaberto." to "None — properties apply when apps reopen.",
+    "Atenção ao escopo: esta prop é GLOBAL, vale para TODO app que iniciar — a lista " to
+        "Scope warning: this property is GLOBAL and affects every newly started app — the list ",
+    "abaixo só escolhe quem é fechado agora para reler. SkiaVK é experimental neste " to
+        "only selects which apps restart now. SkiaVK is experimental on this ",
+    "driver Mali: em uso real deu piscadas pretas em transições, YouTube Shorts e " to
+        "Mali driver and produced black flashes in transitions, YouTube Shorts and ",
+    "multitarefa, e tela preta com crash no NTE. SkiaGL é o de fábrica." to
+        "multitasking, plus an NTE black-screen crash. SkiaGL is stock.",
+    "Reiniciar a SystemUI junto" to "Restart SystemUI too",
+    "Aplica as props também na interface do sistema (a barra pisca)." to
+        "Also applies properties to the system UI (the status bar blinks).",
+    "Algoritmo ativo" to "Active algorithm",
+    "Escolhido, ainda não aplicado" to "Selected, not applied yet",
+    "Tamanho" to "Size",
+    "4 GB (padrão Samsung, não alterado)" to "4 GB (Samsung default, unchanged)",
+    "ART / zygote" to "ART / zygote",
+    "Processos prontos no zygote (USAP)" to "Pre-forked zygote processes (USAP)",
+    "Compilar (dex2oat) só no LITTLE" to "Compile (dex2oat) only on LITTLE",
+    "Teto de heap por app: 256 → 288 MB" to "Per-app heap ceiling: 256 → 288 MB",
+    "Reinício leve agora" to "Soft restart now",
+    "Compilação AOT" to "AOT compilation",
+    "Compilar agora" to "Compile now",
+    "Reverter" to "Reset",
+    "Compilando… pode levar vários minutos." to "Compiling… this may take several minutes.",
+    "Manter vivo em segundo plano" to "Keep alive in background",
+    "Sem GOS: prioridade para o jogo direto no kernel" to "Without GOS: game priority at kernel level",
+    "Apps protegidos" to "Protected apps",
+    "Nenhum — toque para escolher." to "None — tap to choose.",
+    "Limpar RAM ao ativar o Game" to "Clear RAM when Game starts",
+    "Ativar Game automaticamente" to "Activate Game automatically",
+    "Controle automático" to "Automatic controller",
+    "Limpar agora" to "Clear now",
+    "Isentar os jogos da restrição da Samsung" to "Exempt games from Samsung restrictions",
+    "Total na tabela do sistema (Samsung + nossos)" to "Total in system table (Samsung + ours)",
+    "Desligar o SPCM" to "Disable SPCM",
+    "Desligar as políticas do MARs" to "Disable MARs policies",
+    "Políticas MARs 1 e 8" to "MARs policies 1 and 8",
+    "Proteger os apps da lista" to "Protect listed apps",
+    "Vigia" to "Watcher",
+    "rodando (1 s)" to "running (1 s)",
+    "parado" to "stopped",
+    "Prioridade aplicada" to "Applied priority",
+    "acima de app comum, abaixo do sistema" to "above normal apps, below the system",
+    "Exportar diagnóstico" to "Export diagnostics",
+    "Lista de proteção" to "Protection list",
+    "Vazia." to "Empty.",
+    "protegido" to "protected",
+    "Jogos selecionados" to "Selected games",
+    "Escolher" to "Choose",
+    "Resultado da aplicação" to "Apply result",
+    "Nada aplicado ainda." to "Nothing applied yet.",
+    "Log do módulo" to "Module log",
+    "Vazio." to "Empty.",
+    "Lendo apps instalados…" to "Reading installed apps…",
+    "Cancelar" to "Cancel",
+    "Salvar" to "Save",
+    "Aplicar" to "Apply",
+    "Atualizar" to "Refresh",
+    "Reiniciar" to "Restart",
+    "Reiniciar interface" to "Restart interface",
+    "Continuar mesmo assim" to "Continue anyway",
+    "Entendo, ativar" to "I understand, enable",
+    "Trocar" to "Change",
+    "Compilar" to "Compile",
+    "Compilar os jogos" to "Compile games",
+    "Reverter a compilação" to "Reset compilation",
+    "Reiniciar o SurfaceFlinger" to "Restart SurfaceFlinger",
+    "Pendente: reiniciar SurfaceFlinger" to "Pending: restart SurfaceFlinger",
+    "Pendente: reinício leve (zygote)" to "Pending: soft restart (zygote)",
+    "Falha ao gerar diagnóstico" to "Failed to export diagnostics",
+    "Diagnóstico salvo em" to "Diagnostics saved to",
+    "RAM limpa" to "RAM cleared",
+    "Proteção ligada — vigia rodando" to "Protection enabled — watcher running",
+    "Proteção pedida, mas o vigia não subiu" to "Protection requested, but watcher did not start",
+    "Proteção desligada" to "Protection disabled",
+    "Valores da Samsung restaurados" to "Samsung values restored",
+    "Limitadores da Samsung desligados" to "Samsung limiters disabled",
+    "Isenção removida" to "Exemption removed",
+    "Jogos isentos da restrição" to "Games exempted from restrictions",
+    "SPCM desligado" to "SPCM disabled",
+    "SPCM de volta" to "SPCM restored",
+    "Políticas MARs desligadas" to "MARs policies disabled",
+    "Políticas MARs de volta" to "MARs policies restored",
+    "Reinício leve disparado" to "Soft restart triggered",
+    "SurfaceFlinger reiniciado" to "SurfaceFlinger restarted",
+    "aplicado(s)" to "applied",
+    "falhou" to "failed",
+    "limitado(s)" to "limited",
+    "n/d" to "n/a",
+    "toque para ver" to "tap to view",
+    "selecionado(s)" to "selected",
+    "app(s)" to "app(s)",
+    "jogo(s)" to "game(s)",
+    "na lista de proteção" to "in the protection list",
+    "na lista — toque em Compilar para aplicar" to "in the list — tap Compile to apply",
+    "ocioso" to "idle",
+    "travado" to "locked",
+    "fábrica" to "stock",
+    "forçada" to "forced",
+    "opcional" to "optional",
+    "recomendado p/ jogos" to "recommended for games",
+    "recomendado" to "recommended",
+    "GANHO" to "BENEFIT",
+    "CUSTO" to "COST",
+    "VER" to "VIEW",
+    "Apps" to "Apps",
+    "Memória" to "Memory",
+)
