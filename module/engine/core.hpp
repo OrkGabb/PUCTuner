@@ -253,6 +253,27 @@ public:
 bool accept(const Model& model, const ContextKey& key, const Observation& s, Action current,
             Action next, const Constraints& c, bool explore);
 
+// Why the controller did not spend more, recorded per window so the question can be answered
+// from the history instead of argued from the code.
+//
+// "The CPU axis never went above level 1 in 569 windows" has two opposite explanations and the
+// history could not tell them apart: the model may have LEARNED that raising the floor buys
+// nothing here -- which on a device whose big-cluster ceiling is externally capped two thirds of
+// the time may simply be true -- or it may never have been allowed to find out. Those call for
+// opposite fixes, so the distinguishing facts belong in the file: what the model thinks the best
+// costlier move is worth, what it had to beat, and how many times that edge has ever been
+// measured in this context. An advantage near zero backed by `tried` in the dozens is a learned
+// refusal; the same advantage with `tried` at zero is an untested guess.
+struct Ambition {
+    int move = -1;            // best costlier candidate, or -1 when the search offered none
+    double advantage = 0;     // its modelled advantage over staying put
+    double toll = 0;          // the margin it had to clear
+    unsigned tried = 0;       // measured windows behind that edge in this context
+    bool accepted = false;    // whether it would pass accept() right now
+};
+Ambition ambition(const Model& model, const ContextKey& key, const Observation& s,
+                  Action current, const Constraints& c, bool explore);
+
 // Bounded replay of real measured windows. Idle time is spent re-fitting the critic on this
 // buffer instead of on imagined data, so learning continues without acting on the device.
 class Replay {

@@ -91,7 +91,12 @@ static constexpr char HistoryHeader[] =
     "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,cpu_psi,mem_psi,io_psi,credit,"
     // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
     // the point of logging them is to fit those scales to measured windows rather than guess again.
-    "major_faults_s,swap_in_s,file_refault_s";
+    "major_faults_s,swap_in_s,file_refault_s,"
+    // Why more was not spent. `gate` names the term that closed exploration; want_* describe the
+    // best costlier move the model could see. Together they separate a controller that learned an
+    // axis is worthless from one that was never permitted to test it -- the two readings of "the
+    // CPU axis never left level 1" that this file could not previously tell apart.
+    "gate,want_move,want_adv,want_toll,want_tried,want_ok";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
 static std::ofstream openHistory(const std::string& path, off_t limit) {
@@ -228,6 +233,12 @@ int main(int argc, char** argv) {
     // gates acting, and a peak is never less conservative than the single sample it replaces.
     double tempPeak = 0, batteryPeak = 0;
     Decision decision; std::string reason = "warming_up", credit = "none";
+    // Per-window record of the exploration gate and of the best costlier move the model knows
+    // about. `gate` names the term that closed exploration, because the terms are not
+    // interchangeable: the battery one rises through a session and never falls back, so once it
+    // shuts it stays shut, while the die one reopens whenever the scene lightens.
+    std::string gate = "warming_up";
+    Ambition want;
     double lastError = 0, lastValue = 0;
     uint64_t rejected = 0, passiveWindows = 0;
     int rehearsed = 0;
@@ -403,6 +414,11 @@ int main(int argc, char** argv) {
         else if (tick - changedAt < 18) reason = "settling";
         else reason = "mcts";
         if (rehearsed > 0 && (reason == "screen_idle" || reason == "waiting_frames")) reason = "rehearsing";
+        // Cleared every window. These are only meaningful when the search actually ran, and a
+        // value carried over from an earlier window would name a cause for a window that never
+        // reached the gate -- `reason` already says why in that case.
+        gate = "-";
+        want = Ambition{};
         if (safeNow && !bench && conflict.empty() && s.framesValid && !transition && tick - changedAt >= 18) {
             // Exploration is gated on safety and headroom, never on whether the session is
             // currently smooth: a bad plateau is exactly where the controller has to be allowed
@@ -415,7 +431,18 @@ int main(int argc, char** argv) {
             // exploit-only measurement possible at all.
             const bool explore = learning && s.temp < limits.high - 10 && s.batteryTemp < 39 &&
                 s.battery >= 25 && limits.ceiling >= 2;
+            // Report the FIRST term that fails, in the order the condition evaluates them, so the
+            // column names one cause rather than a set. Without this the history records only
+            // that the controller stood still, and standing still because the model priced a
+            // boost at zero and standing still because novelty was unavailable look identical.
+            gate = !learning                        ? "learning_off"
+                 : !(s.temp < limits.high - 10)     ? "die_hot"
+                 : !(s.batteryTemp < 39)            ? "battery_hot"
+                 : !(s.battery >= 25)               ? "charge_low"
+                 : !(limits.ceiling >= 2)           ? "allowance"
+                                                    : "open";
             decision = planner.search(brain, key, s, current, limits, explore);
+            want = ambition(brain.model, key, s, current, limits, explore);
             auto next = accept(brain.model, key, s, current, decision.action, limits, explore)
                 ? decision.action : current;
             if (canControl) {
@@ -524,7 +551,9 @@ int main(int argc, char** argv) {
                 << ',' << credit
                 << ',' << (s.pagingValid ? s.majorFaults : -1)
                 << ',' << (s.pagingValid ? s.swapIn : -1)
-                << ',' << (s.pagingValid ? s.fileRefault : -1) << '\n';
+                << ',' << (s.pagingValid ? s.fileRefault : -1)
+                << ',' << gate << ',' << want.move << ',' << want.advantage
+                << ',' << want.toll << ',' << want.tried << ',' << (want.accepted ? 1 : 0) << '\n';
         pauseFor(std::max(.05, 1. - (monotonic() - tick)));
     }
     if (brain.model.samples > 0 || brain.windows > 0) atomicText(dir + "/adaptive_model", brain.serialize(identity));

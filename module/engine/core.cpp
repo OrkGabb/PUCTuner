@@ -535,6 +535,26 @@ bool accept(const Model& model, const ContextKey& key, const Observation& s, Act
     return explore && model.count(key, current, next) < (costlier ? 3u : 8u);
 }
 
+Ambition ambition(const Model& model, const ContextKey& key, const Observation& s,
+                  Action current, const Constraints& c, bool explore) {
+    Ambition out;
+    // The same margin accept() applies, recomputed here rather than plumbed out of it: this must
+    // report what the gate WOULD do without being able to change what it does.
+    out.toll = c.tier == Tier::Game ? .008 : .015;
+    const double stay = reward(model.predict(key, s, current, current), c, current);
+    for (const auto& choice : candidates(current, s, c)) {
+        const Action& next = choice.action;
+        if (next == current || next.effort() <= current.effort()) continue;
+        const double advantage = reward(model.predict(key, s, current, next), c, next) - stay;
+        if (out.move >= 0 && advantage <= out.advantage) continue;
+        out.move = choice.move;
+        out.advantage = advantage;
+        out.tried = model.count(key, current, next);
+        out.accepted = accept(model, key, s, current, next, c, explore);
+    }
+    return out;
+}
+
 void Replay::add(const Features& before, const CostVector& measured, const Features& after,
                  Tier tier, double step, std::mt19937& rng) {
     Sample sample;

@@ -278,6 +278,42 @@ int main() {
         assert(accept(gate.model, gateKey, s, up, {}, c, true));
     }
 
+    // ---- ambition: the history must separate "learned it is worthless" from "never tried" -----
+    {
+        Brain gate;
+        auto key = context(s, c, "ambition");
+        Constraints one = c;                       // one axis open, so the best costlier move is
+        one.allowed = {true, false, false, false}; // unambiguous and `tried` is assertable
+        Action up; up.level[0] = 1;
+
+        // Cold start. A costlier move exists and has a real margin to clear, nothing has ever
+        // been measured behind it, and the model alone cannot justify it -- only novelty can.
+        auto cold = ambition(gate.model, key, s, {}, one, false);
+        assert(cold.move >= 0 && cold.toll > 0);
+        assert(cold.tried == 0 && !cold.accepted);
+        assert(ambition(gate.model, key, s, {}, one, true).accepted); // novelty, while exploring
+
+        // Now teach it that the boost genuinely pays. The model, not the novelty budget, must
+        // carry it: accepted stays true with exploration OFF, which is the state this device
+        // spends a third of its gameplay in once the battery passes 39 C.
+        auto better = s; better.at += 6; better.p95 = 12; better.jank = .05;
+        for (int i = 0; i < 6; ++i) assert(gate.model.observe(key, s, {}, up, better));
+        auto earned = ambition(gate.model, key, s, {}, one, false);
+        assert(earned.tried >= 6);
+        assert(earned.advantage >= earned.toll && earned.accepted);
+
+        // And the opposite lesson must read differently in the file. Same number of measured
+        // windows, no gain in any of them: refused, but with `tried` high -- which is exactly the
+        // distinction the column exists to make against a cold `tried` of zero.
+        Brain flat;
+        auto flatKey = context(s, c, "ambition-flat");
+        auto nothing = s; nothing.at += 6;
+        for (int i = 0; i < 6; ++i) assert(flat.model.observe(flatKey, s, {}, up, nothing));
+        auto refused = ambition(flat.model, flatKey, s, {}, one, false);
+        assert(refused.tried >= 6 && !refused.accepted);
+        assert(refused.advantage < refused.toll);
+    }
+
     // ---- curiosity reaches the search, not just the gate ----------------------------------------
     {
         auto coldKey = context(s, c, "curious");
