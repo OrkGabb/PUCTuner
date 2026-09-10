@@ -37,6 +37,7 @@ static std::string describe(const Observation& s) {
         << "\nfps=" << (s.frameTimeMs > 0 ? 1000. * s.frames / s.frameTimeMs : 0)
         << "\nslow_frames_50ms=" << s.slowFrames50
         << "\ncpu=" << s.cpu << "\ncpu_peak=" << s.cpuPeak << "\nthread_peak=" << s.threadPeak
+        << "\ncpu_psi=" << s.cpuPsi << "\nmem_psi=" << s.memPsi << "\nio_psi=" << s.ioPsi
         << "\ngpu=" << s.gpu
         << "\ntemp=" << s.temp << "\nhot_zone=" << (s.hotZone.empty() ? "-" : s.hotZone)
         << "\nbattery_temp=" << s.batteryTemp
@@ -83,7 +84,11 @@ static constexpr char HistoryHeader[] =
     // clock-and-load proxy that never saw a milliamp -- and a file that does not say which one
     // cannot be used to answer a question about battery.
     "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,hot_zone,battery_temp,energy,power_valid,samples,windows,state_value,budget,"
-    "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit,"
+    // The three pressures separately, not only folded into deficit_stall. The stall channel is
+    // cpuPsi + 1.5*memPsi + ioPsi, and a window that stalled cannot be attributed from the sum:
+    // "the texture pool was evicted" and "the storage could not keep up" are different problems
+    // with different fixes, and they arrive at the objective as the same number.
+    "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,cpu_psi,mem_psi,io_psi,credit,"
     // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
     // the point of logging them is to fit those scales to measured windows rather than guess again.
     "major_faults_s,swap_in_s,file_refault_s";
@@ -515,6 +520,7 @@ int main(int argc, char** argv) {
                 << (s.queueValid ? s.queueMs : -1) << ',' << (s.queueValid ? s.queuePeakMs : -1) << ','
                 << (s.queueValid ? s.queueLate : -1) << ',' << reason << ',' << regime << ',' << shortfall.primary()
                 << ',' << (shortfall.valid[StallChannel] ? shortfall.value[StallChannel] : -1)
+                << ',' << s.cpuPsi << ',' << s.memPsi << ',' << s.ioPsi
                 << ',' << credit
                 << ',' << (s.pagingValid ? s.majorFaults : -1)
                 << ',' << (s.pagingValid ? s.swapIn : -1)
