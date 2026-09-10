@@ -78,7 +78,11 @@ static constexpr char HistoryHeader[] =
     // battery_temp belongs here as much as temp does: it vetoes every action at 43 C and is a
     // cost term, and it is also the sensor closest to what a hand on the glass feels, which is
     // the comparison that keeps getting made against a die sensor that is not measuring that.
-    "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,hot_zone,battery_temp,energy,samples,windows,state_value,budget,"
+    // `power_valid` next to `energy` for the same reason `cadence` sits next to `jank`: the
+    // column means two different things depending on it -- measured watts over eight, or a
+    // clock-and-load proxy that never saw a milliamp -- and a file that does not say which one
+    // cannot be used to answer a question about battery.
+    "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,hot_zone,battery_temp,energy,power_valid,samples,windows,state_value,budget,"
     "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit,"
     // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
     // the point of logging them is to fit those scales to measured windows rather than guess again.
@@ -506,7 +510,7 @@ int main(int argc, char** argv) {
                 << s.target << ',' << s.cadenceSeen << ','
                 << s.p95 << ',' << s.jank << ',' << s.temp << ','
                 << (s.hotZone.empty() ? "-" : s.hotZone) << ',' << s.batteryTemp << ','
-                << s.energy << ',' << brain.model.samples << ','
+                << s.energy << ',' << s.powerValid << ',' << brain.model.samples << ','
                 << brain.windows << ',' << lastValue << ',' << allowance.remaining() << ','
                 << (s.queueValid ? s.queueMs : -1) << ',' << (s.queueValid ? s.queuePeakMs : -1) << ','
                 << (s.queueValid ? s.queueLate : -1) << ',' << reason << ',' << regime << ',' << shortfall.primary()
