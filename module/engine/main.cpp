@@ -96,7 +96,7 @@ static constexpr char HistoryHeader[] =
     // best costlier move the model could see. Together they separate a controller that learned an
     // axis is worthless from one that was never permitted to test it -- the two readings of "the
     // CPU axis never left level 1" that this file could not previously tell apart.
-    "gate,want_move,want_adv,want_toll,want_tried,want_ok";
+    "gate,want_move,want_adv,want_toll,want_tried,want_ok,axes";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
 static std::ofstream openHistory(const std::string& path, off_t limit) {
@@ -512,7 +512,15 @@ int main(int argc, char** argv) {
                << "\nnodes_verified=" << verified << "\nmeasurable=" << measurable(s)
                << "\ncan_control=" << canControl << "\npassive_windows=" << passiveWindows
                << "\nmeasured_action=" << measuredAction.id()
+               // Level 0 alone cannot distinguish no spending from a disabled axis.
+               // Refusals accumulate until restart; reaching MaxRefusals disables that axis.
+               // Export both permission and counts so diagnostics can test whether this happened.
                << "\npelt_allowed=" << limits.allowed[3]
+               << "\naxes_allowed=" << limits.allowed[0] << limits.allowed[1]
+                                     << limits.allowed[2] << limits.allowed[3]
+               << "\nrefusals=" << refusals[0] << '/' << refusals[1] << '/'
+                                 << refusals[2] << '/' << refusals[3]
+               << "\nrefusal_limit=" << MaxRefusals
                << "\naction=" << current.id() << "\nproposal=" << decision.action.id() << "\nmove=" << decision.move
                << "\nsamples=" << brain.model.samples << "\nwindows=" << brain.windows
                << "\ncredit=" << credit << "\nrejected=" << rejected
@@ -553,7 +561,9 @@ int main(int argc, char** argv) {
                 << ',' << (s.pagingValid ? s.swapIn : -1)
                 << ',' << (s.pagingValid ? s.fileRefault : -1)
                 << ',' << gate << ',' << want.move << ',' << want.advantage
-                << ',' << want.toll << ',' << want.tried << ',' << (want.accepted ? 1 : 0) << '\n';
+                << ',' << want.toll << ',' << want.tried << ',' << (want.accepted ? 1 : 0)
+                << ',' << (limits.allowed[0] * 1 + limits.allowed[1] * 2 +
+                           limits.allowed[2] * 4 + limits.allowed[3] * 8) << '\n';
         pauseFor(std::max(.05, 1. - (monotonic() - tick)));
     }
     if (brain.model.samples > 0 || brain.windows > 0) atomicText(dir + "/adaptive_model", brain.serialize(identity));

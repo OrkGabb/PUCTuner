@@ -47,3 +47,33 @@ $$\text{PUCT}(s, a) = Q(s, a) + c_{\text{puct}} \cdot P(s, a) \cdot \frac{\sqrt{
 4. **Dirichlet Noise & Exploration:** Root Dirichlet noise injection prevents premature convergence.
 5. **Evidence Aging:** Prior visit counts decay over time ($2^{-\Delta \text{age} / 64}$), prompting periodic re-evaluation.
 6. **Surprise Threshold:** When real cost exceeds 4 standard deviations from prediction, prior authority is reset to trigger instant re-exploration.
+
+## Reading Decision Telemetry
+
+`adaptive_status` reports `axes_allowed` as four digits in CPU, GPU, MIF, PELT order.
+`1111` permits all four axes. `refusals` lists their cumulative write-rejection counts
+in the same order, separated by `/`; `refusal_limit` reports the threshold that disables
+an axis until the daemon restarts. An axis can also be unavailable because of capability,
+configuration, ownership constraints, or temporary backoff. A disabled axis alone does
+not identify which cause applied.
+
+`adaptive_history.csv` records one row per measurement window. Read columns by name:
+
+| Column | Meaning |
+|---|---|
+| `reason` | What the controller did this window, including settling, search, or external writes. |
+| `gate` | First failed exploration condition: `learning_off`, `die_hot`, `battery_hot`, `charge_low`, or `allowance`; `open` permits exploration. `-` means search was not reached. |
+| `want_move` | Best modeled costlier candidate among the permitted moves; `-1` means none was evaluated. This is not necessarily the planner's chosen move. |
+| `want_adv` / `want_toll` | Predicted immediate reward advantage versus staying, and the acceptance threshold. |
+| `want_tried` | Recorded observations for that candidate's edge in the current model context. Zero means the edge has not been measured there. |
+| `want_ok` | Whether that candidate would pass acceptance now. It does not mean the planner selected it or the hardware applied it. |
+| `axes` | Permission bitmask used for this window's search: CPU=1, GPU=2, MIF=4, PELT=8. `15` permits all axes. |
+
+A closed exploration gate still permits a costlier move whose modeled advantage clears
+the threshold. Conversely, `want_ok=1` with little spending does not prove an acceptance
+failure: MCTS chooses using its search, and this column describes a separate candidate.
+Use `gate` to distinguish windows that reached search before interpreting `want_*`.
+
+These fields observe the controller without changing its decisions. Schema changes and
+size limits rotate the history into `adaptive_history.csv.1`, replacing an existing `.1`;
+copy both files before an update or a long measurement if the older session must survive.
