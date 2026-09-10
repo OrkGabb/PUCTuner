@@ -47,7 +47,12 @@ struct Observation {
     // not for a weight picked in advance.
     double majorFaults = 0, swapIn = 0, fileRefault = 0;
     bool pagingValid = false;
+    // Junction temperature: the hottest of the BIG, LITTLE and G3D die sensors, and the name of
+    // whichever one it was. Not skin temperature -- at rest here the die sensors read 30-35 C
+    // while the battery zone reads 28.7, and under load that gap widens to tens of degrees, so
+    // this number is not what a hand on the glass feels and must not be compared with it.
     double temp = 0, batteryTemp = 0, trend = 0, watts = 0, energy = 0;
+    std::string hotZone;
     double p95 = 0, jank = 0;
     // Presentation intervals actually counted, independent of controller mode and poll timing.
     double frameStart = 0, frameEnd = 0, frameTimeMs = 0;

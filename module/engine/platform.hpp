@@ -41,7 +41,8 @@ struct FrameTracker {
     void reset() { last = first = 0; cadence = 0; slower = faster = 0; samples.clear(); }
 };
 class Sampler {
-    std::vector<std::string> thermals;
+    struct Zone { std::string path, name; };
+    std::vector<Zone> thermals;
     RunqueueProbe queue;
     double watchedAt = -100;
     uint64_t prevTotal = 0, prevIdle = 0;

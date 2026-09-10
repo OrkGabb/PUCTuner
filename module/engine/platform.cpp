@@ -349,7 +349,7 @@ bool trimBackgroundMemory() {
 Sampler::Sampler(const std::string& moduleRoot) {
     for (const auto& z : globPaths("/sys/class/thermal/thermal_zone*")) {
         auto type = trim(readText(z + "/type", 128));
-        if (type == "BIG" || type == "LITTLE" || type == "G3D") thermals.push_back(z + "/temp");
+        if (type == "BIG" || type == "LITTLE" || type == "G3D") thermals.push_back({z + "/temp", type});
     }
     if (!moduleRoot.empty()) queue.start(moduleRoot + "/bin/runqueue.bpf.o");
 }
@@ -397,9 +397,12 @@ Observation Sampler::read(int cap, bool finishWindow) {
     s.cpuPsi = psi("/proc/pressure/cpu"); s.memPsi = psi("/proc/pressure/memory"); s.ioPsi = psi("/proc/pressure/io");
     s.memAvailKb = availableMemoryKb();
     int readTemps = 0;
-    for (const auto& z : thermals) {
-        double t = number(readText(z, 64)) / 1000.;
-        if (t > 0 && t < 120) { s.temp = std::max(s.temp, t); ++readTemps; }
+    for (const auto& [path, zone] : thermals) {
+        double t = number(readText(path, 64)) / 1000.;
+        // Which zone won matters: this number vetoes every action at the limit and halves the
+        // reachable level three degrees below it, and BIG, LITTLE and G3D do not run together.
+        // Taking the max of three and recording none of them made a thermal veto unauditable.
+        if (t > 0 && t < 120) { if (t > s.temp) { s.temp = t; s.hotZone = zone; } ++readTemps; }
     }
     auto supply = readText("/sys/class/power_supply/battery/uevent", 8192);
     std::map<std::string, std::string> bat; std::istringstream bi(supply); std::string line;

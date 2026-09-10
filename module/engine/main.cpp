@@ -38,7 +38,8 @@ static std::string describe(const Observation& s) {
         << "\nslow_frames_50ms=" << s.slowFrames50
         << "\ncpu=" << s.cpu << "\ncpu_peak=" << s.cpuPeak << "\nthread_peak=" << s.threadPeak
         << "\ngpu=" << s.gpu
-        << "\ntemp=" << s.temp << "\nbattery_temp=" << s.batteryTemp
+        << "\ntemp=" << s.temp << "\nhot_zone=" << (s.hotZone.empty() ? "-" : s.hotZone)
+        << "\nbattery_temp=" << s.batteryTemp
         << "\nwatts=" << (s.powerValid ? std::to_string(s.watts) : "unavailable")
         << "\nenergy_source=" << (s.powerValid ? "battery_mA_uV" : "clock_load_proxy")
         << "\nthermal_valid=" << s.thermalValid << "\nframes_valid=" << s.framesValid << "\nawake=" << s.awake
@@ -74,7 +75,10 @@ static constexpr char HistoryHeader[] =
     // `cadence` sits next to jank because jank is a share of intervals past 1500/cadence ms:
     // without the denominator in the file, the column cannot be compared between two sessions,
     // and a run whose cadence was detected higher reads as a run that got worse.
-    "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,energy,samples,windows,state_value,budget,"
+    // battery_temp belongs here as much as temp does: it vetoes every action at 43 C and is a
+    // cost term, and it is also the sensor closest to what a hand on the glass feels, which is
+    // the comparison that keeps getting made against a die sensor that is not measuring that.
+    "at,profile,app,action,frames,cadence,cadence_seen,p95_ms,jank,temp,hot_zone,battery_temp,energy,samples,windows,state_value,budget,"
     "queue_ms,queue_peak_ms,queue_late,reason,regime,deficit,deficit_stall,credit,"
     // Raw rates, unnormalised on purpose: the feature scales for these two are provisional, and
     // the point of logging them is to fit those scales to measured windows rather than guess again.
@@ -208,6 +212,12 @@ int main(int argc, char** argv) {
     constexpr int MaxRefusals = 5;
     double windowAt = monotonic(), changedAt = 0, savedAt = 0, budgetAt = monotonic();
     double cpuSum = 0, gpuSum = 0, energySum = 0; int readings = 0;
+    // Load is averaged across the window; temperature was whatever the last 1 Hz sample happened
+    // to read at the boundary. Measured at rest on this device, the BIG and LITTLE die sensors
+    // swing 5 C and step 3 C between half-second samples, so which sample landed on the boundary
+    // decided the next window's thermal clamp. The window's PEAK, not its mean: this number
+    // gates acting, and a peak is never less conservative than the single sample it replaces.
+    double tempPeak = 0, batteryPeak = 0;
     Decision decision; std::string reason = "warming_up", credit = "none";
     double lastError = 0, lastValue = 0;
     uint64_t rejected = 0, passiveWindows = 0;
@@ -247,9 +257,11 @@ int main(int argc, char** argv) {
         int cap = static_cast<int>(std::clamp(number(value(cfg, "adaptive_target_fps", "120"), 120), 24., 144.));
         auto s = sampler.read(cap, endWindow);
         cpuSum += s.cpu; gpuSum += s.gpu; energySum += s.energy; ++readings;
+        tempPeak = std::max(tempPeak, s.temp); batteryPeak = std::max(batteryPeak, s.batteryTemp);
         if (!endWindow) { pauseFor(std::max(.05, 1. - (monotonic() - tick))); continue; }
         s.cpu = cpuSum / readings; s.gpu = gpuSum / readings; s.energy = energySum / readings;
-        cpuSum = gpuSum = energySum = 0; readings = 0; windowAt = tick;
+        if (s.thermalValid) { s.temp = std::max(s.temp, tempPeak); s.batteryTemp = std::max(s.batteryTemp, batteryPeak); }
+        cpuSum = gpuSum = energySum = 0; readings = 0; tempPeak = batteryPeak = 0; windowAt = tick;
         Constraints limits;
         limits.tier = RuntimeObjective;
         limits.high = std::clamp(number(value(cfg, "adaptive_thermal_limit", "82"), 82), 60., 84.);
@@ -492,7 +504,9 @@ int main(int argc, char** argv) {
         auto history = openHistory(dir + "/adaptive_history.csv", 131072);
         history << s.at << ',' << profile << ',' << hash(s.app) << ',' << current.id() << ',' << s.frames << ','
                 << s.target << ',' << s.cadenceSeen << ','
-                << s.p95 << ',' << s.jank << ',' << s.temp << ',' << s.energy << ',' << brain.model.samples << ','
+                << s.p95 << ',' << s.jank << ',' << s.temp << ','
+                << (s.hotZone.empty() ? "-" : s.hotZone) << ',' << s.batteryTemp << ','
+                << s.energy << ',' << brain.model.samples << ','
                 << brain.windows << ',' << lastValue << ',' << allowance.remaining() << ','
                 << (s.queueValid ? s.queueMs : -1) << ',' << (s.queueValid ? s.queuePeakMs : -1) << ','
                 << (s.queueValid ? s.queueLate : -1) << ',' << reason << ',' << regime << ',' << shortfall.primary()
