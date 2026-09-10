@@ -28,4 +28,6 @@ __pycache__/
 # External reference materials
 .reference/
 
-
+# Working notes and session handoff. Local only: it is a scratchpad that changes every
+# session, and versioning it turns every status update into a merge conflict.
+status.md
