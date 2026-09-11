@@ -51,7 +51,7 @@ struct TrimGate {
     long baselineKb = 0;
     long freedKb = 0;
     bool measured = false;
-    void arm(long memAvailKb) { baselineKb = memAvailKb; }
+    void arm(long memAvailKb) { baselineKb = memAvailKb; measured = false; freedKb = 0; }
     bool armed() const { return baselineKb > 0; }
     bool closeWindow(long memAvailKb);
 };

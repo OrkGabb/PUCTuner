@@ -883,6 +883,11 @@ int main() {
         // Foreground reallocations make the signed delta negative; that is data, not zero.
         g.arm(1000000);
         assert(g.closeWindow(800000) && g.freedKb == -200000);
+        // A later unreadable trim must not report the previous trim's delta as its own.
+        g.arm(1000000);
+        assert(!g.measured && g.freedKb == 0);
+        assert(g.closeWindow(0) && !g.measured && !g.armed());
+        assert(!g.closeWindow(1500000) && !g.measured);
         // Unreadable window: still spanned, still consumed exactly once, still unmeasured.
         TrimGate u;
         u.arm(1000000);
