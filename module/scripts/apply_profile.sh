@@ -710,8 +710,8 @@ apply_bench_eas
 apply_cpuidle
 PROFILE="$REQUESTED_PROFILE"
 apply_vm
-# Opt-in, one-shot: fires when profile=game or game_ram_clear=1 is active
-if { [ "$PROFILE" = "game" ] || [ "$(read_cfg game_ram_clear 0)" = "1" ]; } && \
+# Opt-in, one-shot: the UI promises a clear when Game is applied, not on every live-tier edit.
+if [ "$PROFILE" = "game" ] && [ "$(read_cfg game_ram_clear 0)" = "1" ] && \
    [ "${M54_SKIP_RAM_CLEAR:-}" != 1 ]; then
   game_ram_clear
 fi

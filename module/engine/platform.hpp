@@ -23,6 +23,9 @@ std::vector<std::string> lockedTuningNodes();
 std::string foreground(const std::string& activityDump);
 std::string chooseLayer(const std::string& dump, const std::string& app);
 long availableMemoryKb();
+// Automatic process termination is a separate, explicit opt-in from the one-shot Game action.
+bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Observation& s,
+                         bool transition, bool benchmark, double sinceLastAttempt);
 // Fires the trim and says only whether the request was accepted. How much it actually freed is
 // deliberately NOT returned: teardown and reclaim are asynchronous, so the only honest answer
 // comes from the next window's MemAvailable, and main.cpp is where that comparison belongs.

@@ -302,10 +302,7 @@ int main(int argc, char** argv) {
         auto nextSession = s.app + ':' + profile + ':' + configId + ':' + std::to_string(fas) + ':' + conflict;
         bool transition = nextSession != session;
         bool bench = benchmark(dir);
-        // Autonomous RAM Management:
-        // Background cached apps hoard gigabytes of memory, starving UE5/graphics texture streaming pools,
-        // triggering low-res mipmap drops, LOD cutbacks, and heavy ZRAM paging stalls.
-        // Trim background cached apps proactively during memory starvation or upon demanding game launch.
+        // Measure a previous trim at the next window, after asynchronous process teardown.
         if (trimBaselineKb > 0 && s.memAvailKb > 0) {
             // Signed on purpose. Clamping at zero merges "the kill freed nothing" with "it freed
             // 200 MB and the foreground allocated 250 back inside the same window", and those
@@ -314,26 +311,15 @@ int main(int argc, char** argv) {
             trimBaselineKb = 0;
             trimMeasured = true;
         }
-        bool enableRamTrim = value(cfg, "adaptive_ram_management", "1") == "1" ||
-                             value(cfg, "game_ram_clear", "0") == "1";
-        if (enableRamTrim && s.awake && !s.app.empty() && s.memAvailKb > 0) {
-            bool renderWorkload = s.framesValid || s.frames > 0;
-            bool demandingWorkload = demanding(s);
-            bool severePressure = s.memPsi > 0.12 || s.memAvailKb < 800000;
-            bool gamingShortage = (renderWorkload || demandingWorkload) && (s.memAvailKb < 1500000 || s.memPsi > 0.08);
-            double cooldown = (s.memAvailKb < 600000) ? 20.0 : 60.0;
-            if ((severePressure || gamingShortage) && (tick - lastRamTrimAt >= cooldown || (transition && (renderWorkload || demandingWorkload)))) {
-                if (trimBackgroundMemory()) {
-                    lastRamTrimAt = tick;
-                    ++totalRamTrims;
-                    // The effect is read at the NEXT window boundary, never inline. `kill-all`
-                    // returns as soon as ActivityManager has acknowledged it, while process
-                    // teardown and page reclaim run asynchronously afterwards -- so a
-                    // MemAvailable read microseconds later is taken before a single page has
-                    // come back. That is why every trim this engine has ever performed reported
-                    // last_trim_freed_mb=0: an action with no measurement behind it.
-                    trimBaselineKb = s.memAvailKb;
-                }
+        if (automaticRamTrimDue(cfg, s, transition, bench, tick - lastRamTrimAt)) {
+            // Throttle unsuccessful attempts too; a failing binder command must not
+            // be retried on every window of memory pressure.
+            lastRamTrimAt = tick;
+            if (trimBackgroundMemory()) {
+                ++totalRamTrims;
+                // ActivityManager acknowledges the request before process teardown and
+                // page reclaim complete. Read its net effect at the NEXT window boundary.
+                trimBaselineKb = s.memAvailKb;
             }
         }
         if (s.temp >= limits.high || s.batteryTemp >= limits.batteryHigh) cooling = true;

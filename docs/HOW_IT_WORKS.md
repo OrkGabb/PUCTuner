@@ -225,7 +225,21 @@ flowchart TD
 * **Guaranteed 2x Floor:** M54 Tuner enforces a permanent baseline of `sched_pelt_multiplier = 2` (16 ms halflife). Level 0 never resets to 1x.
 * **Exploratory 4x Boost:** Under heavy render deficits, the autonomous engine can dynamically scale PELT to 4x (8 ms halflife) for instantaneous scheduler response.
 
-### Proactive Background RAM Trimming
-* **The Graphic Pipeline Starvation Problem:** Modern 3D engines (e.g., Unreal Engine 5 in *Neverness to Ever*) dynamically allocate texture streaming pools. When physical RAM is hoarded by cached background apps (Chrome, Play Store, etc.), `MemAvailable` drops below 1 GB and memory pressure stalls spike (`/proc/pressure/memory`). In response, game engines drastically shrink their texture streaming pool to avoid OOM crashes, resulting in blurry low-res mipmaps and aggressive foliage LOD culling.
-* **Autonomous In-Flight Trimming:** The adaptive daemon samples `/proc/meminfo` every window. When running 3D render workloads with `MemAvailable < 1500 MB` (or when memory PSI exceeds 0.08, or system-wide RAM drops below 800 MB), the daemon executes a non-blocking background trim (`cmd activity kill-all`).
-* **Zero Disruption Guarantee:** Unlike destructive memory killers or cache flushers (`drop_caches`), `cmd activity kill-all` strictly evicts idle cached processes already queued for LMK reclaim. The foreground application, active audio, and system services remain completely untouched, instantly restoring 1.5–2.5 GB of free RAM for graphics assets.
+### Background RAM Trimming
+
+The app's `game_ram_clear` setting authorizes one clear when applying the Game profile.
+It does not enable periodic termination, clear apps on every live-setting change, or
+implicitly enable clearing when the option is off. The manual clear button remains separate.
+
+The daemon's optional periodic trim requires an explicit `adaptive_ram_management=1` in
+its configuration; an absent setting disables it. It runs only in active mode, during a
+stable rendering window, outside benchmarks and foreground transitions. Memory below
+1,500,000 kB or memory PSI above 0.08 makes a window eligible. Attempts are separated by
+60 seconds, or 20 seconds below 600,000 kB, including failed attempts. App switches never
+bypass this interval. Observe mode does not terminate processes.
+
+`cmd activity kill-all` requests termination of background processes through ActivityManager.
+It can increase later cold starts; it offers no guarantee of freed RAM or better frame pacing.
+The request is synchronous with a bounded timeout; actual teardown and reclaim can complete
+later. The daemon reports the net MemAvailable change at the following window, which also
+includes concurrent allocations and can be negative.

@@ -334,6 +334,18 @@ long availableMemoryKb() {
     }
     return val;
 }
+bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Observation& s,
+                         bool transition, bool benchmark, double sinceLastAttempt) {
+    const auto enabled = cfg.find("adaptive_ram_management");
+    const auto mode = cfg.find("adaptive_mode");
+    if (enabled == cfg.end() || enabled->second != "1" ||
+        (mode != cfg.end() && mode->second != "active") || benchmark || transition ||
+        !s.awake || s.app.empty() || !s.framesValid || s.memAvailKb <= 0) return false;
+    // Never bypass the cooldown on an app switch: that made ordinary navigation kill cached
+    // apps repeatedly. Missing configuration must not silently opt into process termination.
+    const double cooldown = s.memAvailKb < 600000 ? 20. : 60.;
+    return sinceLastAttempt >= cooldown && (s.memAvailKb < 1500000 || s.memPsi > .08);
+}
 bool trimBackgroundMemory() {
     // `command` rather than std::system: no shell between us and the binder call, a bounded
     // timeout instead of an open-ended block inside a six-second control loop, and stdio that

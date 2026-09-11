@@ -832,6 +832,43 @@ int main() {
         assert(writer.restore()); assert(number(readText(dir + "/max")) == 1000);
         c.allowed[1] = false; assert(writer.apply({}, c)); assert(number(readText(dir + "/max")) == 1000);
     }
+    {
+        Observation lowMemory;
+        lowMemory.awake = lowMemory.framesValid = true;
+        lowMemory.app = "example.app";
+        lowMemory.memAvailKb = 500000;
+        std::map<std::string, std::string> cfg;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        cfg["game_ram_clear"] = "1";
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        cfg["adaptive_ram_management"] = "0";
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        cfg["adaptive_ram_management"] = "1";
+        assert(automaticRamTrimDue(cfg, lowMemory, false, false, 20));
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 19));
+        assert(!automaticRamTrimDue(cfg, lowMemory, true, false, 120));
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, true, 120));
+        for (const char* mode : {"observe", "off", "invalid"}) {
+            cfg["adaptive_mode"] = mode;
+            assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        }
+        cfg["adaptive_mode"] = "active";
+        lowMemory.memAvailKb = 1000000;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 59));
+        assert(automaticRamTrimDue(cfg, lowMemory, false, false, 60));
+        lowMemory.framesValid = false;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        lowMemory.framesValid = true; lowMemory.awake = false;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        lowMemory.awake = true; lowMemory.app.clear();
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        lowMemory.app = "example.app"; lowMemory.memAvailKb = 0;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        lowMemory.memAvailKb = 2000000;
+        assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+        lowMemory.memPsi = .09;
+        assert(automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+    }
     for (const auto& f : globPaths(dir + "/*")) unlink(f.c_str());
     rmdir(dir.c_str());
     std::cout << "engine: PUCT search, critic, policy prior, replay, allowance, backoff, persistence,\n"
