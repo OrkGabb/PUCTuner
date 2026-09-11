@@ -42,6 +42,27 @@ bool axisAvailable(const RefusalState& state, int axis, double tick);
 void axisRejected(RefusalState& state, int axis, double tick);
 void decayRefusals(RefusalState& state, double tick);
 Constraints withTransient(Constraints base, const RefusalState& state, double tick);
+// Pending-trim state machine. `arm()` records MemAvailable when a trim is requested;
+// `closeWindow()` runs once per closed window and reports whether the pair ending here
+// spans that release. The arming is consumed exactly once, so one trim skips one window,
+// whether or not the freed amount was readable — an unreadable window is still spanned,
+// it just stays "unmeasured" instead of reporting a delta over several windows.
+struct TrimGate {
+    long baselineKb = 0;
+    long freedKb = 0;
+    bool measured = false;
+    void arm(long memAvailKb) { baselineKb = memAvailKb; }
+    bool armed() const { return baselineKb > 0; }
+    bool closeWindow(long memAvailKb);
+};
+// Builds the learning identity from the stable capability, never from the transient
+// permission. A named step rather than a bare `context()` call so the call site states
+// which mask it keys on; the contract (key follows base, ignores backoff) is pinned by
+// tests, and any return to keying on the transient mask is a visible call-site change.
+inline ContextKey stableKey(const Observation& s, const Constraints& base,
+                            const std::string& configId) {
+    return context(s, base, configId);
+}
 // Shift `path` to `path.1`, `.1` to `.2`, and so on up to `keep` generations, deleting the
 // oldest. Repairing history by overwriting a single `.1` capped the evidence available for
 // long-session investigations to whatever happened to survive last.

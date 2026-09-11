@@ -20,6 +20,13 @@ struct Device {
     double temp = 38, previous = 38;
     std::mt19937 rng{11};
     Observation step(Action a, int target, double at) {
+        // NOTE: heat and energy deliberately follow the charged effort(), not the hardware
+        // effect — PELT 1 heats here although it writes the same 2x baseline as 0 on the
+        // real node. Decoupling only this side breaches the furnace (411 breaches, peak
+        // 82.9 C, against 0 at 72.7 C coupled), because pricing and physics must move
+        // together: the controller's phantom heat charge currently coincides with phantom
+        // sim heat. Any PELT repricing changes this line and Action::effort() in the same
+        // commit, validated on device — never one side alone.
         const double effort = a.effort() / 16.;
         temp += ((36 + heatGain * effort) - temp) * .18;
         double base = 26.;

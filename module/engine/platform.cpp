@@ -372,6 +372,18 @@ Constraints withTransient(Constraints base, const RefusalState& state, double ti
         base.allowed[i] = base.allowed[i] && axisAvailable(state, i, tick);
     return base;
 }
+bool TrimGate::closeWindow(long memAvailKb) {
+    if (baselineKb <= 0) return false;
+    if (memAvailKb > 0) {
+        // Signed on purpose. Clamping at zero merges "the kill freed nothing" with "it freed
+        // 200 MB and the foreground allocated 250 back inside the same window", and those
+        // call for opposite conclusions about whether the trim is worth doing at all.
+        freedKb = memAvailKb - baselineKb;
+        measured = true;
+    }
+    baselineKb = 0;
+    return true;
+}
 void rotateGenerations(const std::string& path, int keep) {
     if (keep < 1) return;
     ::unlink((path + "." + std::to_string(keep)).c_str());

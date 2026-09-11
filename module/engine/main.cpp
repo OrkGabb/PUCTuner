@@ -244,13 +244,10 @@ int main(int argc, char** argv) {
     int rehearsed = 0;
     double lastRamTrimAt = -100;
     uint64_t totalRamTrims = 0;
-    long lastRamFreedKb = 0;
-    bool trimMeasured = false;     // "unknown" and "measured zero" are different facts
-    long trimBaselineKb = 0;       // MemAvailable at the moment the pending trim was requested
-    // Set when this window measured a trim requested earlier: the (before, now) pair spans a
-    // memory release outside the DVFS action space, so crediting the DVFS edge for what
-    // followed would teach the controller that floors free gigabytes.
-    bool trimSpanned = false;
+    // Pending-trim state machine (unit-tested): one armed trim spans exactly the pair ending
+    // at the next window, measured or not. "Unknown" and "measured zero" stay different facts
+    // inside the gate.
+    TrimGate trim;
     // A pair armed from a window the engine was not controlling. It still measured a real
     // transition of this device, so it earns a value backup; it earns nothing else, because the
     // engine did not choose to hold still there, it was not permitted to move.
@@ -305,26 +302,14 @@ int main(int argc, char** argv) {
         limits.ceiling = allowance.ceiling();
         baseLimits.ceiling = limits.ceiling;
         auto configId = configIdentity(cfg);
-        auto key = context(s, baseLimits, configId);
+        auto key = stableKey(s, baseLimits, configId);
         auto nextSession = s.app + ':' + profile + ':' + configId + ':' + std::to_string(fas) + ':' + conflict;
         bool transition = nextSession != session;
         bool bench = benchmark(dir);
         // Measure a previous trim at the next window, after asynchronous process teardown.
-        // The pair ending here spans a release outside the DVFS action space, so it must not
-        // train the DVFS edge even when the freed amount itself is unreadable this window.
-        trimSpanned = false;
-        if (trimBaselineKb > 0) {
-            trimSpanned = true;
-            if (s.memAvailKb > 0) {
-                // Signed on purpose. Clamping at zero merges "the kill freed nothing" with
-                // "it freed 200 MB and the foreground allocated 250 back inside the same
-                // window", and those call for opposite conclusions about whether the trim is
-                // worth doing at all.
-                lastRamFreedKb = s.memAvailKb - trimBaselineKb;
-                trimMeasured = true;
-            }
-            trimBaselineKb = 0;
-        }
+        // A spanned pair must not train the DVFS edge: its p95 and paging changes belong to
+        // the release, not to the floor held across it.
+        const bool trimSpanned = trim.closeWindow(s.memAvailKb);
         if (automaticRamTrimDue(cfg, s, transition, bench, tick - lastRamTrimAt)) {
             // Throttle unsuccessful attempts too; a failing binder command must not
             // be retried on every window of memory pressure.
@@ -333,7 +318,7 @@ int main(int argc, char** argv) {
                 ++totalRamTrims;
                 // ActivityManager acknowledges the request before process teardown and
                 // page reclaim complete. Read its net effect at the NEXT window boundary.
-                trimBaselineKb = s.memAvailKb;
+                trim.arm(s.memAvailKb);
             }
         }
         if (s.temp >= limits.high || s.batteryTemp >= limits.batteryHigh) cooling = true;
@@ -549,7 +534,7 @@ int main(int argc, char** argv) {
                << "\nowner=" << (fas ? "fas-rs+M54" : "M54") << "\ncapabilities=" << actuator.capabilities()
                << "\nmem_avail_mb=" << (s.memAvailKb > 0 ? s.memAvailKb / 1024 : -1)
                << "\nram_trims=" << totalRamTrims
-               << "\nlast_trim_freed_mb=" << (trimMeasured ? std::to_string(lastRamFreedKb / 1024) : "unmeasured")
+               << "\nlast_trim_freed_mb=" << (trim.measured ? std::to_string(trim.freedKb / 1024) : "unmeasured")
                << "\nat=" << monotonic() << '\n';
         atomicText(dir + "/adaptive_status", status.str());
         if ((brain.model.samples > 0 || brain.windows > 0) && tick - savedAt >= 60) {

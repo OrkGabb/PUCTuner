@@ -870,6 +870,27 @@ int main() {
         assert(automaticRamTrimDue(cfg, lowMemory, false, false, 120));
     }
     {
+        // One armed trim spans exactly the pair ending at the next window, measured or not.
+        // This is the state machine behind the daemon's `trim_skipped` credit: the spanned
+        // pair must train nothing, and learning resumes on the following window.
+        TrimGate g;
+        assert(!g.armed() && !g.closeWindow(1500000));
+        g.arm(1000000);
+        assert(g.armed());
+        assert(g.closeWindow(1250000));
+        assert(!g.armed() && g.measured && g.freedKb == 250000);
+        assert(!g.closeWindow(1300000));
+        // Foreground reallocations make the signed delta negative; that is data, not zero.
+        g.arm(1000000);
+        assert(g.closeWindow(800000) && g.freedKb == -200000);
+        // Unreadable window: still spanned, still consumed exactly once, still unmeasured.
+        TrimGate u;
+        u.arm(1000000);
+        assert(u.closeWindow(0) && !u.measured && !u.armed());
+        assert(!u.closeWindow(2000000));
+        assert(!u.measured);
+    }
+    {
         // Stable identity versus transient permission: a two-minute QoS hold changes what the
         // search may touch, never the key the model learns under.
         Constraints base;
@@ -883,6 +904,14 @@ int main() {
         const auto keyEff = context(s, eff, id);
         assert(keySame.fine == keyBase.fine && keySame.coarse == keyBase.coarse);
         assert(keyEff.fine != keyBase.fine && keyEff.coarse != keyBase.coarse);
+        // The named step keys on the base by contract: same fields as context-from-base,
+        // never the transient mask — even with an axis latched off. (The remaining surface
+        // is the call site in main.cpp using this helper; a return to inline context()
+        // with the transient mask would be a visible call-site change, not a silent one.)
+        const auto pinned = stableKey(s, base, id);
+        assert(pinned.fine == keyBase.fine && pinned.coarse == keyBase.coarse &&
+               pinned.policy == keyBase.policy);
+        assert(pinned.fine != keyEff.fine && pinned.coarse != keyEff.coarse);
         assert(!axisAvailable(st, 0, 1000) && axisAvailable(st, 0, 1000 + RefusalBackoffSec));
         // Five rapid rejections latch the axis; quiet time earns it back for a re-probe, and a
         // failed probe latches it again instead of flapping every window.
