@@ -134,13 +134,52 @@ if ! factory_valid; then
     [ -n "$pmax" ] && [ -n "$phw" ] && [ "$pmax" -lt "$phw" ] 2>/dev/null &&
       capped="$capped $(basename "$p")($pmax<$phw)"
   done
-  if [ "$cur" = "$hw" ] && { [ -z "$gcur" ] || [ "$gcur" = "$ghw" ]; } && [ -z "$capped" ]; then
+  # The elevator poisons the same way: a session capture under Game records mq-deadline
+  # as "factory", after which Balanced restores it on every apply and ssg's tunables never
+  # come back. ssg is this kernel's stock elevator (and the restore default); where it is
+  # offered but not active on a data LUN, the device is tuned. Boot LUNs are skipped by the
+  # same size filter apply_io uses — tuning them was already dead writes.
+  iosched_tuned=
+  for b in /sys/block/sd* /sys/block/mmcblk* /sys/block/nvme*; do
+    [ -e "$b/queue/scheduler" ] || continue
+    size=$(cat "$b/size" 2>/dev/null)
+    case "$size" in ''|*[!0-9]*) continue;; esac
+    [ "$size" -lt 4194304 ] && continue
+    if grep -q ssg "$b/queue/scheduler" 2>/dev/null; then
+      cur_iosched=$(cat "$b/queue/scheduler" 2>/dev/null | tr ' ' '\n' | grep '^\[' | tr -d '[]')
+      [ -n "$cur_iosched" ] && [ "$cur_iosched" != ssg ] &&
+        iosched_tuned="$iosched_tuned $(basename "$b")($cur_iosched)"
+    fi
+  done
+  if [ "$cur" = "$hw" ] && { [ -z "$gcur" ] || [ "$gcur" = "$ghw" ]; } && [ -z "$capped" ] && [ -z "$iosched_tuned" ]; then
     capture_factory
   elif [ -n "$capped" ]; then
     log "factory NOT captured: a CPU ceiling is below hardware:$capped; keeping prior snapshot"
+  elif [ -n "$iosched_tuned" ]; then
+    log "factory NOT captured: I/O elevator is not stock:$iosched_tuned; keeping prior snapshot"
   else
     log "factory NOT captured/refreshed: device looks tuned (min=$cur hw=$hw); keeping prior snapshot"
   fi
+fi
+
+# Self-heal snapshots poisoned before the guard above existed: a session-source factory
+# naming a non-ssg elevator restores it on every Balanced apply. Rewrite the bare scheduler
+# lines to stock wherever ssg is offered; queue-level values are per-queue state, not the
+# elevator, and are left alone. Boot-source snapshots are trusted and never touched.
+if [ "$(grep '^source=' "$FACTORY" 2>/dev/null | cut -d= -f2)" = session ]; then
+  for b in /sys/block/sd* /sys/block/mmcblk* /sys/block/nvme*; do
+    [ -e "$b/queue/scheduler" ] || continue
+    size=$(cat "$b/size" 2>/dev/null)
+    case "$size" in ''|*[!0-9]*) continue;; esac
+    [ "$size" -lt 4194304 ] && continue
+    grep -q ssg "$b/queue/scheduler" 2>/dev/null || continue
+    name=$(basename "$b")
+    cur=$(grep -E "^io_$name=" "$FACTORY" 2>/dev/null | tail -1 | cut -d= -f2-)
+    if [ -n "$cur" ] && [ "$cur" != ssg ]; then
+      sed -i "s/^io_$name=.*/io_$name=ssg/" "$FACTORY" &&
+        log "factory io.$name sanitized: $cur -> ssg"
+    fi
+  done
 fi
 
 # "--boot" claims nothing has read these props yet. That is only true at a REAL boot: with LKM
