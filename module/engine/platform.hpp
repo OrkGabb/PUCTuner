@@ -23,6 +23,29 @@ std::vector<std::string> lockedTuningNodes();
 std::string foreground(const std::string& activityDump);
 std::string chooseLayer(const std::string& dump, const std::string& app);
 long availableMemoryKb();
+// Stable capability versus transient permission. `constrain()` reports which axes the
+// device and configuration allow at all; short write rejections must never rewrite that
+// answer, or the context identity fragments across masks. Keep both: the stable mask feeds
+// `context()`, the transient one feeds the search and the actuator.
+struct RefusalState {
+    std::array<int, Axes> count{};
+    std::array<double, Axes> blockedUntil{};
+    std::array<double, Axes> lastChange{};
+};
+constexpr int MaxRefusals = 5;
+constexpr double RefusalBackoffSec = 120;
+// One count decays after this long without a new rejection, so a transient QoS storm
+// re-probes gradually instead of latching an axis off until the daemon restarts.
+// Provisional; fit from `refusals` telemetry rather than from intuition.
+constexpr double RefusalDecaySec = 900;
+bool axisAvailable(const RefusalState& state, int axis, double tick);
+void axisRejected(RefusalState& state, int axis, double tick);
+void decayRefusals(RefusalState& state, double tick);
+Constraints withTransient(Constraints base, const RefusalState& state, double tick);
+// Shift `path` to `path.1`, `.1` to `.2`, and so on up to `keep` generations, deleting the
+// oldest. Repairing history by overwriting a single `.1` capped the evidence available for
+// long-session investigations to whatever happened to survive last.
+void rotateGenerations(const std::string& path, int keep = 3);
 // Automatic process termination is a separate, explicit opt-in from the one-shot Game action.
 bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Observation& s,
                          bool transition, bool benchmark, double sinceLastAttempt);

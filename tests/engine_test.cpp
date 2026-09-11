@@ -869,6 +869,62 @@ int main() {
         lowMemory.memPsi = .09;
         assert(automaticRamTrimDue(cfg, lowMemory, false, false, 120));
     }
+    {
+        // Stable identity versus transient permission: a two-minute QoS hold changes what the
+        // search may touch, never the key the model learns under.
+        Constraints base;
+        RefusalState st;
+        const std::string id = "identity-test";
+        const auto keyBase = context(s, base, id);
+        axisRejected(st, 0, 1000);
+        Constraints eff = withTransient(base, st, 1000);
+        assert(base.allowed[0] && !eff.allowed[0]);
+        const auto keySame = context(s, base, id);
+        const auto keyEff = context(s, eff, id);
+        assert(keySame.fine == keyBase.fine && keySame.coarse == keyBase.coarse);
+        assert(keyEff.fine != keyBase.fine && keyEff.coarse != keyBase.coarse);
+        assert(!axisAvailable(st, 0, 1000) && axisAvailable(st, 0, 1000 + RefusalBackoffSec));
+        // Five rapid rejections latch the axis; quiet time earns it back for a re-probe, and a
+        // failed probe latches it again instead of flapping every window.
+        RefusalState storm;
+        for (int i = 0; i < 5; ++i) axisRejected(storm, 2, 2000 + i);
+        assert(!axisAvailable(storm, 2, 3000));
+        decayRefusals(storm, 3000 + RefusalDecaySec);
+        assert(storm.count[2] == 4 && axisAvailable(storm, 2, 3000 + RefusalDecaySec));
+        axisRejected(storm, 2, 3000 + RefusalDecaySec);
+        assert(storm.count[2] == 5 && !axisAvailable(storm, 2, 3000 + RefusalDecaySec));
+        // A stable denial stays denied no matter how quiet it gets.
+        Constraints off = base; off.allowed[1] = false;
+        assert(!withTransient(off, RefusalState{}, 1e9).allowed[1]);
+    }
+    {
+        // PELT redundancy is recorded, not corrected here: levels 0 and 1 write the same 2x
+        // baseline (platform.cpp maps both onto it), yet they price differently. Both the
+        // obvious corrections were tried and both breach the furnace — canonicalising 1 onto
+        // 0 strands the boost behind a two-step reach it used to cross in one window, and
+        // binary effort lets the search wander the free 0<->1 edge until it diffuses into the
+        // boost. Either needs the transition model to price PELT heat first (heuristic() has
+        // a dp term for energy but none for temperature), which is device measurement, not a
+        // constant to tune until the synthetic device passes.
+        Action redundant; redundant.level[3] = 1;
+        assert(redundant.id() != Action{}.id());
+        assert(redundant.effort() == 1);
+    }
+    {
+        // Generations shift instead of overwriting a single `.1`.
+        file(dir + "/rot", "new");
+        file(dir + "/rot.1", "one");
+        file(dir + "/rot.2", "two");
+        rotateGenerations(dir + "/rot", 3);
+        assert(readText(dir + "/rot", 16).empty());
+        assert(readText(dir + "/rot.1", 16) == "new");
+        assert(readText(dir + "/rot.2", 16) == "one");
+        assert(readText(dir + "/rot.3", 16) == "two");
+        file(dir + "/rot", "newer");
+        file(dir + "/rot.3", "stale");
+        rotateGenerations(dir + "/rot", 3);
+        assert(readText(dir + "/rot.3", 16) == "one");
+    }
     for (const auto& f : globPaths(dir + "/*")) unlink(f.c_str());
     rmdir(dir.c_str());
     std::cout << "engine: PUCT search, critic, policy prior, replay, allowance, backoff, persistence,\n"

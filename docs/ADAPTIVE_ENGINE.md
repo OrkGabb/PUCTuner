@@ -51,11 +51,17 @@ $$\text{PUCT}(s, a) = Q(s, a) + c_{\text{puct}} \cdot P(s, a) \cdot \frac{\sqrt{
 ## Reading Decision Telemetry
 
 `adaptive_status` reports `axes_allowed` as four digits in CPU, GPU, MIF, PELT order.
-`1111` permits all four axes. `refusals` lists their cumulative write-rejection counts
-in the same order, separated by `/`; `refusal_limit` reports the threshold that disables
-an axis until the daemon restarts. An axis can also be unavailable because of capability,
-configuration, ownership constraints, or temporary backoff. A disabled axis alone does
-not identify which cause applied.
+`1111` permits all four axes. `refusals` lists their write-rejection counts in the same
+order, separated by `/`; `refusal_limit` reports the threshold that holds an axis off.
+Each count decays after fifteen quiet minutes, so a transient QoS storm re-probes
+gradually instead of latching until restart. `base_allowed` is the stable capability
+behind the context identity; `axes_allowed` is the transient permission the search used.
+An axis can also be unavailable because of capability, configuration, ownership
+constraints, or temporary backoff. A disabled axis alone does not identify which cause
+applied. Known imperfection, deliberately left in: PELT levels 0 and 1 both write the 2x
+baseline yet price differently. Both minimal corrections breach the furnace scenario, so
+the fix waits on a device-measured PELT heat term in the transition model rather than on
+a constant tuned until the synthetic device passes.
 
 `adaptive_history.csv` records one row per measurement window. Read columns by name:
 
@@ -74,6 +80,12 @@ the threshold. Conversely, `want_ok=1` with little spending does not prove an ac
 failure: MCTS chooses using its search, and this column describes a separate candidate.
 Use `gate` to distinguish windows that reached search before interpreting `want_*`.
 
+A window whose pair spans a successful RAM trim is recorded with credit
+`trim_skipped`: its p95 and paging changes belong to the release, not to the DVFS floor
+held across it, so value, policy and residual all stay out and the next window re-arms
+from the post-trim state.
+
 These fields observe the controller without changing its decisions. Schema changes and
-size limits rotate the history into `adaptive_history.csv.1`, replacing an existing `.1`;
-copy both files before an update or a long measurement if the older session must survive.
+size limits rotate the history through three generations (`adaptive_history.csv.1`
+through `.3`); copy all four files before an update or a long measurement if the older
+session must survive.

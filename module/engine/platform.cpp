@@ -3,6 +3,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <csignal>
 #include <cstring>
 #include <fcntl.h>
@@ -345,6 +346,39 @@ bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Ob
     // apps repeatedly. Missing configuration must not silently opt into process termination.
     const double cooldown = s.memAvailKb < 600000 ? 20. : 60.;
     return sinceLastAttempt >= cooldown && (s.memAvailKb < 1500000 || s.memPsi > .08);
+}
+bool axisAvailable(const RefusalState& state, int axis, double tick) {
+    if (axis < 0 || axis >= Axes) return false;
+    return state.count[axis] < MaxRefusals && tick >= state.blockedUntil[axis];
+}
+void axisRejected(RefusalState& state, int axis, double tick) {
+    if (axis < 0 || axis >= Axes) return;
+    state.blockedUntil[axis] = tick + RefusalBackoffSec;
+    if (state.count[axis] < 1000) ++state.count[axis];
+    state.lastChange[axis] = tick;
+}
+void decayRefusals(RefusalState& state, double tick) {
+    for (int i = 0; i < Axes; ++i) {
+        if (state.count[i] <= 0) continue;
+        if (tick - state.lastChange[i] >= RefusalDecaySec) {
+            --state.count[i];
+            state.lastChange[i] = tick;
+            if (state.count[i] <= 0) state.blockedUntil[i] = 0;
+        }
+    }
+}
+Constraints withTransient(Constraints base, const RefusalState& state, double tick) {
+    for (int i = 0; i < Axes; ++i)
+        base.allowed[i] = base.allowed[i] && axisAvailable(state, i, tick);
+    return base;
+}
+void rotateGenerations(const std::string& path, int keep) {
+    if (keep < 1) return;
+    ::unlink((path + "." + std::to_string(keep)).c_str());
+    for (int i = keep - 1; i >= 1; --i)
+        ::rename((path + "." + std::to_string(i)).c_str(),
+                 (path + "." + std::to_string(i + 1)).c_str());
+    ::rename(path.c_str(), (path + ".1").c_str());
 }
 bool trimBackgroundMemory() {
     // `command` rather than std::system: no shell between us and the binder call, a bounded

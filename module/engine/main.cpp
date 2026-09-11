@@ -70,7 +70,7 @@ static bool benchmark(const std::string& dir) {
 }
 static void rotate(const std::string& path, off_t limit) {
     struct stat st{};
-    if (stat(path.c_str(), &st) == 0 && st.st_size > limit) rename(path.c_str(), (path + ".1").c_str());
+    if (stat(path.c_str(), &st) == 0 && st.st_size > limit) rotateGenerations(path, 3);
 }
 static constexpr char HistoryHeader[] =
     // `cadence` sits next to jank because jank is a share of intervals past 1500/cadence ms:
@@ -99,12 +99,14 @@ static constexpr char HistoryHeader[] =
     "gate,want_move,want_adv,want_toll,want_tried,want_ok,axes";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
+// Rotations keep three generations instead of overwriting a single `.1`, so a long session
+// keeps enough evidence to investigate rather than whatever survived last.
 static std::ofstream openHistory(const std::string& path, off_t limit) {
     struct stat st{};
     bool keep = stat(path.c_str(), &st) == 0;
     if (keep && (st.st_size > limit ||
                  readText(path, 512).compare(0, std::strlen(HistoryHeader), HistoryHeader) != 0)) {
-        rename(path.c_str(), (path + ".1").c_str());
+        rotateGenerations(path, 3);
         keep = false;
     }
     std::ofstream out(path, std::ios::app);
@@ -219,11 +221,9 @@ int main(int argc, char** argv) {
     bool cooling = false;
     // A refused write is usually Samsung's top-app QoS holding a cluster for a moment, not a
     // node we may never touch. Back off that axis for two minutes and try again; only a node
-    // that keeps refusing is latched off for the rest of the run.
-    std::array<double, Axes> blockedUntil{};
-    std::array<int, Axes> refusals{};
-    constexpr double Backoff = 120;
-    constexpr int MaxRefusals = 5;
+    // that keeps refusing is held off, and even then each count decays after fifteen quiet
+    // minutes so a transient storm re-probes gradually instead of latching until restart.
+    RefusalState refusalState;
     double windowAt = monotonic(), changedAt = 0, savedAt = 0, budgetAt = monotonic();
     double cpuSum = 0, gpuSum = 0, energySum = 0; int readings = 0;
     // Load is averaged across the window; temperature was whatever the last 1 Hz sample happened
@@ -247,6 +247,10 @@ int main(int argc, char** argv) {
     long lastRamFreedKb = 0;
     bool trimMeasured = false;     // "unknown" and "measured zero" are different facts
     long trimBaselineKb = 0;       // MemAvailable at the moment the pending trim was requested
+    // Set when this window measured a trim requested earlier: the (before, now) pair spans a
+    // memory release outside the DVFS action space, so crediting the DVFS edge for what
+    // followed would teach the controller that floors free gigabytes.
+    bool trimSpanned = false;
     // A pair armed from a window the engine was not controlling. It still measured a real
     // transition of this device, so it earns a value backup; it earns nothing else, because the
     // engine did not choose to hold still there, it was not permitted to move.
@@ -282,34 +286,44 @@ int main(int argc, char** argv) {
         s.cpu = cpuSum / readings; s.gpu = gpuSum / readings; s.energy = energySum / readings;
         if (s.thermalValid) { s.temp = std::max(s.temp, tempPeak); s.batteryTemp = std::max(s.batteryTemp, batteryPeak); }
         cpuSum = gpuSum = energySum = 0; readings = 0; tempPeak = batteryPeak = 0; windowAt = tick;
-        Constraints limits;
-        limits.tier = RuntimeObjective;
-        limits.high = std::clamp(number(value(cfg, "adaptive_thermal_limit", "82"), 82), 60., 84.);
+        Constraints baseLimits;
+        baseLimits.tier = RuntimeObjective;
+        baseLimits.high = std::clamp(number(value(cfg, "adaptive_thermal_limit", "82"), 82), 60., 84.);
         bool fas = false; auto conflict = processConflict(fas);
         // Re-checked every window rather than once at start: a lock can appear while running,
         // and a capability that disappears silently is exactly what went unnoticed for days.
         const auto locked = lockedTuningNodes();
-        limits = actuator.constrain(limits, cfg, fas);
-        for (int i = 0; i < Axes; ++i)
-            limits.allowed[i] = limits.allowed[i] && refusals[i] < MaxRefusals && tick >= blockedUntil[i];
+        baseLimits = actuator.constrain(baseLimits, cfg, fas);
+        // The identity mask is the stable capability, never the transient backoff: feeding a
+        // two-minute QoS hold into `context()` forked one device's physics across masks.
+        decayRefusals(refusalState, tick);
+        Constraints limits = withTransient(baseLimits, refusalState, tick);
         // The allowance is charged for the effort that was actually in effect this window.
         allowance.update(current, s, limits, tick - budgetAt);
         budgetAt = tick;
         brain.budget = allowance.remaining();
         limits.ceiling = allowance.ceiling();
+        baseLimits.ceiling = limits.ceiling;
         auto configId = configIdentity(cfg);
-        auto key = context(s, limits, configId);
+        auto key = context(s, baseLimits, configId);
         auto nextSession = s.app + ':' + profile + ':' + configId + ':' + std::to_string(fas) + ':' + conflict;
         bool transition = nextSession != session;
         bool bench = benchmark(dir);
         // Measure a previous trim at the next window, after asynchronous process teardown.
-        if (trimBaselineKb > 0 && s.memAvailKb > 0) {
-            // Signed on purpose. Clamping at zero merges "the kill freed nothing" with "it freed
-            // 200 MB and the foreground allocated 250 back inside the same window", and those
-            // call for opposite conclusions about whether the trim is worth doing at all.
-            lastRamFreedKb = s.memAvailKb - trimBaselineKb;
+        // The pair ending here spans a release outside the DVFS action space, so it must not
+        // train the DVFS edge even when the freed amount itself is unreadable this window.
+        trimSpanned = false;
+        if (trimBaselineKb > 0) {
+            trimSpanned = true;
+            if (s.memAvailKb > 0) {
+                // Signed on purpose. Clamping at zero merges "the kill freed nothing" with
+                // "it freed 200 MB and the foreground allocated 250 back inside the same
+                // window", and those call for opposite conclusions about whether the trim is
+                // worth doing at all.
+                lastRamFreedKb = s.memAvailKb - trimBaselineKb;
+                trimMeasured = true;
+            }
             trimBaselineKb = 0;
-            trimMeasured = true;
         }
         if (automaticRamTrimDue(cfg, s, transition, bench, tick - lastRamTrimAt)) {
             // Throttle unsuccessful attempts too; a failing binder command must not
@@ -336,7 +350,12 @@ int main(int argc, char** argv) {
         // Attribute only a stable, verified post-action window. Observe mode never trains on
         // actions it merely proposed; context changes and settling periods invalidate credit.
         if (eligible && canLearn) {
-            if (backupable(before, s)) {
+            if (trimSpanned) {
+                // A trim landed inside this pair. Its p95 and paging changes belong to the
+                // release, not to the floor held across it: value, policy and residual all
+                // stay out, and the next window re-arms from the post-trim state.
+                credit = "trim_skipped"; eligible = false;
+            } else if (backupable(before, s)) {
                 // Every sound window is a value backup, whether or not an axis moved, and
                 // whether or not the user stayed in the same app. This is what makes learning
                 // continuous instead of one sample per applied change in one quiet session.
@@ -446,7 +465,7 @@ int main(int argc, char** argv) {
                         eligible = beforeMove >= 0;
                     } else {
                         const int axis = actuator.rejectedAxis();
-                        if (axis >= 0) { blockedUntil[axis] = tick + Backoff; ++refusals[axis]; }
+                        if (axis >= 0) axisRejected(refusalState, axis, tick);
                         bool restored = actuator.restore();
                         current = {}; changedAt = tick;
                         reason = restored ? "write_rejected" : "restore_pending";
@@ -499,13 +518,18 @@ int main(int argc, char** argv) {
                << "\ncan_control=" << canControl << "\npassive_windows=" << passiveWindows
                << "\nmeasured_action=" << measuredAction.id()
                // Level 0 alone cannot distinguish no spending from a disabled axis.
-               // Refusals accumulate until restart; reaching MaxRefusals disables that axis.
-               // Export both permission and counts so diagnostics can test whether this happened.
+               // Each refusal count decays after fifteen quiet minutes; reaching MaxRefusals
+               // holds that axis off until a count decays. `axes_allowed` is the transient
+               // permission the search used; `base_allowed` is the stable capability behind
+               // the context identity. Export both so a backoff storm is distinguishable
+               // from a device that never had the axis.
                << "\npelt_allowed=" << limits.allowed[3]
                << "\naxes_allowed=" << limits.allowed[0] << limits.allowed[1]
                                      << limits.allowed[2] << limits.allowed[3]
-               << "\nrefusals=" << refusals[0] << '/' << refusals[1] << '/'
-                                 << refusals[2] << '/' << refusals[3]
+               << "\nbase_allowed=" << baseLimits.allowed[0] << baseLimits.allowed[1]
+                                     << baseLimits.allowed[2] << baseLimits.allowed[3]
+               << "\nrefusals=" << refusalState.count[0] << '/' << refusalState.count[1] << '/'
+                                 << refusalState.count[2] << '/' << refusalState.count[3]
                << "\nrefusal_limit=" << MaxRefusals
                << "\naction=" << current.id() << "\nproposal=" << decision.action.id() << "\nmove=" << decision.move
                << "\nsamples=" << brain.model.samples << "\nwindows=" << brain.windows
