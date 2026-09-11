@@ -1,7 +1,9 @@
 #include "core.hpp"
 #include <algorithm>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <functional>
 #include <iomanip>
 #include <limits>
@@ -9,6 +11,22 @@
 
 namespace m54 {
 static double clip(double x, double lo, double hi) { return std::clamp(x, lo, hi); }
+// Parses one persisted per-feature gradient scale. Strict about malformed text, NaN/inf
+// and overflow, but a denormal underflow reads as the zero it behaves as: the scale is
+// the only multiplicatively-decayed float the brain persists (variance *= beta), so it
+// is the only one that can decay past the smallest normal double — every other persisted
+// float moves additively and stays in range, and stays fail-fast here. Canonicalising to
+// exactly 0.0 (rather than keeping the subnormal) keeps the text identical on every libc.
+bool parseScaleToken(const std::string& token, double& out) {
+    if (token.empty()) return false;
+    errno = 0;
+    char* end = nullptr;
+    const double v = std::strtod(token.c_str(), &end);
+    if (end == token.c_str() || *end != '\0' || !std::isfinite(v)) return false;
+    if (errno == ERANGE && std::fabs(v) > 1.0) return false; // overflow stays fatal
+    out = (v != 0.0 && std::fabs(v) < std::numeric_limits<double>::min()) ? 0.0 : v;
+    return true;
+}
 static constexpr int MaxEffort = Axes * (Levels - 1);
 
 int Action::id() const { return level[0] + 5 * level[1] + 25 * level[2] + 125 * level[3]; }
@@ -344,7 +362,13 @@ double Critic::learn(const Features& before, const CostVector& measured, const F
         for (size_t k = 0; k < Dim; ++k) {
             const double gradient = error * before[k];
             auto& variance = scale[t][k];
-            variance = beta * variance + (1 - beta) * gradient * gradient;
+            // Floor the normalizer where it is already meaningless: it only ever divides
+            // as sqrt(variance) + 1e-3, so anything below 1e-12 is indistinguishable from
+            // zero downstream — except in the persisted text, where a decayed-to-denormal
+            // scale ("4.89e-322") is unparseable on some libc implementations and used to
+            // reject an entire valid brain on load. The floor keeps future files clean;
+            // parseScaleToken recovers the ones already written.
+            variance = std::max(1e-12, beta * variance + (1 - beta) * gradient * gradient);
             const double direction = clip(gradient / (std::sqrt(variance) + 1e-3), -2, 2);
             weights[t][k] = clip(weights[t][k] + pace * direction, -8, 8);
         }
@@ -811,8 +835,12 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
                 for (size_t k = 0; k < dim; ++k)
                     if (!(in >> legacyWeights[t][k]) || !bounded(legacyWeights[t][k], 8)) return false;
                 double discard = 0;
-                for (size_t k = 0; k < dim; ++k)
-                    if (!(in >> discard) || !std::isfinite(discard) || discard < 0 || discard > 100) return false;
+                for (size_t k = 0; k < dim; ++k) {
+                    std::string tok;
+                    if (!(in >> tok) || !parseScaleToken(tok, discard) || discard < 0 ||
+                        discard > 100)
+                        return false;
+                }
             } else {
                 if (t >= static_cast<size_t>(Costs)) return false;
                 for (size_t k = 0; k < dim; ++k) {
@@ -820,8 +848,10 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
                     if (!(in >> x) || !bounded(x, 8)) return false;
                 }
                 for (size_t k = 0; k < dim; ++k) {
+                    std::string tok;
                     auto& x = restored.critic.scale[t][k];
-                    if (!(in >> x) || !std::isfinite(x) || x < 0 || x > 100) return false;
+                    if (!(in >> tok) || !parseScaleToken(tok, x) || x < 0 || x > 100)
+                        return false;
                 }
             }
         } else if (tag == "P") {

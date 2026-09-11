@@ -160,6 +160,9 @@ struct Decision {
 };
 
 uint64_t hash(const std::string& text);
+// Parses one persisted gradient scale (see core.cpp): strict on malformed text,
+// NaN/inf and overflow, tolerant only of denormal underflow, which reads as 0.0.
+bool parseScaleToken(const std::string& token, double& out);
 ContextKey context(const Observation& s, const Constraints& c, const std::string& configId);
 // Three widths of credit, from strictest to loosest: a residual blames one applied edge in one
 // app; a policy preference belongs to one app; a value backup only needs two sound windows.

@@ -4,7 +4,11 @@ BASE=/data/adb/modules
 [ ! -d /data/adb/ksu/modules ] || BASE=/data/adb/ksu/modules
 MODDIR="$BASE/m54tuner"
 DATA=/data/adb/m54tuner
-if [ -f "$MODDIR/scripts/adaptive_stop.sh" ]; then sh "$MODDIR/scripts/adaptive_stop.sh"; fi
+# A stop that fails must abort the install, not race it: proceeding past a live
+# daemon risks the new process reading the model file mid-save and starting empty.
+if [ -f "$MODDIR/scripts/adaptive_stop.sh" ]; then
+  sh "$MODDIR/scripts/adaptive_stop.sh" || { echo "install_live: adaptive stop failed, aborting" >&2; exit 1; }
+fi
 mkdir -p "$MODDIR" "$DATA"
 chmod 0700 "$DATA"
 unzip -oq /data/local/tmp/m54tuner-module.zip -d "$MODDIR"

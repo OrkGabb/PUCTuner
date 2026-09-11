@@ -945,6 +945,48 @@ int main() {
         assert(redundant.effort() == 1);
     }
     {
+        // Scale tokens: strict on malformed text, NaN/inf and overflow, tolerant only of
+        // denormal underflow — which reads as the zero it behaves as downstream. A normal
+        // build parses "4.89e-322" either way; the contract that matters is identical on
+        // every libc, including ones whose stream extraction fails such tokens outright
+        // (measured: that single token rejected a 13.5k-window brain on device).
+        double v = -1;
+        assert(parseScaleToken("0.5", v) && v == 0.5);
+        assert(parseScaleToken("0", v) && v == 0);
+        assert(parseScaleToken("1e-12", v) && v == 1e-12);
+        assert(parseScaleToken("4.89124989e-322", v) && v == 0.0);
+        assert(!parseScaleToken("", v));
+        assert(!parseScaleToken("abc", v));
+        assert(!parseScaleToken("1.2.3", v));
+        assert(!parseScaleToken("1e", v));
+        assert(!parseScaleToken("inf", v) && !parseScaleToken("-inf", v));
+        assert(!parseScaleToken("nan", v));
+        assert(!parseScaleToken("1e999", v));
+        // The normalizer floor: variance that decays past meaning stays parseable. One
+        // window with a zero gradient on a sub-floor scale must pin it exactly at 1e-12 —
+        // a thousand times below anything the 1e-3 in the denominator could notice.
+        Critic floored;
+        floored.scale[2][6] = 5e-13;
+        Features silent{};
+        silent[0] = 1;
+        CostVector mild{};
+        mild[LateCost] = .1;
+        floored.learn(silent, mild, silent, Tier::Game);
+        assert(floored.scale[2][6] == 1e-12);
+        // And a healthy scale still decays normally above the floor.
+        floored.scale[2][7] = 1.0;
+        silent[7] = 0;
+        floored.learn(silent, mild, silent, Tier::Game);
+        assert(floored.scale[2][7] < 1.0 && floored.scale[2][7] > 1e-12);
+        // Round trip with a decayed scale in the payload: loads, reading it as zero.
+        Brain carved;
+        carved.critic.scale[0][6] = 4.9e-322;
+        carved.critic.updates = 1;
+        Brain loaded;
+        assert(loaded.deserialize(carved.serialize("scale-proof"), "scale-proof"));
+        assert(loaded.critic.scale[0][6] == 0.0);
+    }
+    {
         // Generations shift instead of overwriting a single `.1`.
         file(dir + "/rot", "new");
         file(dir + "/rot.1", "one");
