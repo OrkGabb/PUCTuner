@@ -78,7 +78,7 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null; echo "# stopped" >> $LOG; exit 0' EXIT INT TERM
 
 echo "# passive thermal/reach watch. no writes. period=2s" > $LOG
-echo "at_boot at_mono batt_mC batt_mA batt_uV cap z_BIG z_LITTLE z_G3D z_ac cd_isp cd_lit cd_big cd_dev cd_gpu p0_cur p0_min p0_max p4_cur p4_min p4_max g_cur g_min g_max g_busy g_tmu mif_cur mif_min mif_max own_p0min own_p4min own_gmin owned_n" >> $LOG
+echo "at_boot at_engine batt_mC batt_mA batt_uV cap z_BIG z_LITTLE z_G3D z_ac cd_isp cd_lit cd_big cd_dev cd_gpu p0_cur p0_min p0_max p4_cur p4_min p4_max g_cur g_min g_max g_busy g_tmu mif_cur mif_min mif_max own_p0min own_p4min own_gmin owned_n" >> $LOG
 
 while [ -e "$SWITCH" ]; do
   # Three forks: the bulk read, the journal pass, the status grep. gpu_busy carries a '%' and

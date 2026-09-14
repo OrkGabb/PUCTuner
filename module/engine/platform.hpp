@@ -9,7 +9,13 @@ bool writeText(const std::string& path, const std::string& text);
 bool atomicText(const std::string& path, const std::string& text);
 std::map<std::string, std::string> readConfig(const std::string& path);
 double number(const std::string& text, double fallback = -1);
+// Two clocks, because they answer two different questions. `monotonic` stops while the device
+// is suspended, which is what the loop's own pacing and the subprocess timeouts want -- a deep
+// sleep must not expire a 1.5 s dumpsys. `boottime` keeps counting through suspend, which is
+// what anything measuring how much of the world went by needs. Reading both and subtracting is
+// the only way the daemon learns it was asleep at all: nothing else tells it.
 double monotonic();
+double boottime();
 std::vector<std::string> globPaths(const std::string& pattern);
 // `exitCode`, when asked for, distinguishes "ran and failed" from "ran and printed nothing",
 // which the return value alone cannot: both are the empty string. -1 means it never ran.
@@ -96,12 +102,16 @@ class Sampler {
     struct CoreTicks { uint64_t total = 0, idle = 0; };
     std::array<CoreTicks, 16> perCore{};
     std::map<int, uint64_t> threadTicks;
+    // Awake time, not `s.at`. Every counter these two divide -- vmstat's faults, a thread's
+    // utime -- only advances while the CPU is running, so the honest divisor is the time the
+    // CPU was running. Dividing an awake-only delta by a span that counted a suspend reports a
+    // device that was paging hard as one that was idle, and marks the reading valid.
     double threadAt = 0;
     double lastTemp = 0, lastAt = 0;
     // /proc/vmstat counters are monotonic since boot, so only their difference across a closed
     // window means anything. Differenced at the window boundary, never at the 1 s poll.
     uint64_t prevMajorFaults = 0, prevSwapIn = 0, prevFileRefault = 0;
-    double pagingAt = 0;
+    double pagingAt = 0; // awake time, like threadAt above
     std::string app, layer;
     double contextAt = -100;
     bool awake = false; // cached power state between the 6 s context refreshes

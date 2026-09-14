@@ -185,6 +185,13 @@ public:
     double remaining() const { return level; }
     void restore(double value);
     void update(Action applied, const Observation& s, const Constraints& c, double seconds);
+    // Time the device spent suspended, which update() cannot be handed: that one bounds a window
+    // to 60 s, and a deep sleep arrives as one gap of minutes rather than as the two hundred
+    // windows it would have been. Nothing ran and nothing heated, so this only refills -- and it
+    // refills against the temperature measured on the way out, which after a long sleep is
+    // ambient. Without it the allowance is frozen at whatever it held when the phone was put
+    // down, and ceiling() then clamps every axis of a cold device as if it were still hot.
+    void relax(const Observation& s, const Constraints& c, double seconds);
     int ceiling() const;
 };
 

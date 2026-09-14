@@ -1,7 +1,9 @@
 """Attribute a long-session frame collapse: external throttle, engine backoff, or neither.
 
-Reads tools/thermal_watch.sh's log and joins it to the engine's own windows on `at_mono`, the
-CLOCK_MONOTONIC both files carry. Answers three questions that the history alone cannot separate,
+Reads tools/thermal_watch.sh's log and joins it to the engine's own windows on `at_boot`, the
+seconds-since-boot from /proc/uptime. That, not CLOCK_MONOTONIC, is the clock the engine stamps
+its `at` column with, and the only one of the two that keeps counting while the phone sleeps --
+joining on a monotonic key offsets the two files by every second the device has ever suspended. Answers three questions that the history alone cannot separate,
 because the history records the OUTCOME and not who caused it.
 
   1. CEILING   Did anything lower a ceiling? The engine only ever raises floors, so a falling
@@ -115,7 +117,7 @@ def levels(action):
 
 
 def phase(rows, key, lo, hi):
-    vals = [r[key] for r in rows if lo <= r["at_mono"] <= hi and not math.isnan(r[key]) and r[key] >= 0]
+    vals = [r[key] for r in rows if lo <= r["at_boot"] <= hi and not math.isnan(r[key]) and r[key] >= 0]
     return statistics.median(vals) if vals else float("nan")
 
 
@@ -137,7 +139,7 @@ def main():
         print("watch log too short -- is it running?  touch /data/local/tmp/thermal_on")
         return 1
     history = load_history(histories)
-    lo, hi = rows[0]["at_mono"], rows[-1]["at_mono"]
+    lo, hi = rows[0]["at_boot"], rows[-1]["at_boot"]
     game = [r for r in history if lo <= r["at"] <= hi and r["regime"] == "render"]
     minutes = (rows[-1]["at_boot"] - rows[0]["at_boot"]) / 60
     print("watch samples {}  over {:.1f} min   engine render windows joined {}".format(
@@ -187,7 +189,7 @@ def main():
     print("  {:<10}{:>9}{:>9}{:>9}{:>9}{:>9}{:>9}{:>8}".format(
         "third", "mW", "batt_C", "BIG_C", "G3D_C", "p4_cur", "gpu_cur", "gpu%"))
     for i in range(3):
-        part = [r for r in rows if cut[i] <= r["at_mono"] <= cut[i + 1]]
+        part = [r for r in rows if cut[i] <= r["at_boot"] <= cut[i + 1]]
         if not part:
             continue
         def med(key, scale=1.0):

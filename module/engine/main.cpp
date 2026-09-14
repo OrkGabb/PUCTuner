@@ -17,6 +17,9 @@
 using namespace m54;
 static volatile sig_atomic_t stopping = 0;
 static void stop(int) { stopping = 1; }
+// Below this, a divergence between the two clocks is scheduling delay between the two reads,
+// not a sleep any measurement has to care about. Real suspends here are seconds at the least.
+static constexpr double SuspendGap = 1.;
 static void pauseFor(double seconds) {
     double until = monotonic() + seconds;
     while (!stopping && monotonic() < until) usleep(100000);
@@ -96,7 +99,11 @@ static constexpr char HistoryHeader[] =
     // best costlier move the model could see. Together they separate a controller that learned an
     // axis is worthless from one that was never permitted to test it -- the two readings of "the
     // CPU axis never left level 1" that this file could not previously tell apart.
-    "gate,want_move,want_adv,want_toll,want_tried,want_ok,axes";
+    "gate,want_move,want_adv,want_toll,want_tried,want_ok,axes,"
+    // How much of this window's span the device spent suspended. Zero in almost every row, and
+    // the one number that explains a budget that jumped without any window having earned it --
+    // which is the reading that separates a cooled device from a controller that lost its clock.
+    "suspended_s";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
 // Rotations keep three generations instead of overwriting a single `.1`, so a long session
@@ -225,6 +232,11 @@ int main(int argc, char** argv) {
     // minutes so a transient storm re-probes gradually instead of latching until restart.
     RefusalState refusalState;
     double windowAt = monotonic(), changedAt = 0, savedAt = 0, budgetAt = monotonic();
+    // Suspend accounting. Both clocks advance together while the device is awake, so their
+    // divergence across an iteration is exactly the time the device spent suspended. Accumulated
+    // rather than read at the window boundary: a deep sleep can end on any iteration, including
+    // the ones that close no window and `continue` straight back to the top.
+    double wallAt = boottime(), tickAt = monotonic(), suspended = 0;
     double cpuSum = 0, gpuSum = 0, energySum = 0; int readings = 0;
     // Load is averaged across the window; temperature was whatever the last 1 Hz sample happened
     // to read at the boundary. Measured at rest on this device, the BIG and LITTLE die sensors
@@ -264,6 +276,13 @@ int main(int argc, char** argv) {
     Sampler sampler(moduleRoot);
     while (!stopping) {
         const double tick = monotonic();
+        const double wall = boottime();
+        // The two clocks are read a microsecond apart, so their difference is never exactly
+        // zero; accumulating that would leave `suspended_s` full of 5e-06 and unreadable as the
+        // "did this window sleep" column it exists to be. No suspend is shorter than this.
+        const double gap = (wall - wallAt) - (tick - tickAt);
+        suspended += gap > .05 ? gap : 0.;
+        wallAt = wall; tickAt = tick;
         auto cfg = readConfig(dir + "/config");
         // One objective, across every workload. Legacy profile strings have no authority over
         // reward, acceptance, actuator semantics, session boundaries or whether learning runs.
@@ -281,6 +300,13 @@ int main(int argc, char** argv) {
         tempPeak = std::max(tempPeak, s.temp); batteryPeak = std::max(batteryPeak, s.batteryTemp);
         if (!endWindow) { pauseFor(std::max(.05, 1. - (monotonic() - tick))); continue; }
         s.cpu = cpuSum / readings; s.gpu = gpuSum / readings; s.energy = energySum / readings;
+        // What the sensor reads right now, before the window peak replaces it below. The peak is
+        // the right input for charging the allowance -- effort is paid for at the worst heat it
+        // produced -- and the wrong one for crediting a sleep, which refills against the
+        // temperature on the way out. A phone put down hot carries its pre-suspend peak into this
+        // window, so scoring the refill on it prices twenty cold minutes as if the die were still
+        // at 75 C and hands back less than half the headroom the sleep actually earned.
+        const double exitTemp = s.temp;
         if (s.thermalValid) { s.temp = std::max(s.temp, tempPeak); s.batteryTemp = std::max(s.batteryTemp, batteryPeak); }
         cpuSum = gpuSum = energySum = 0; readings = 0; tempPeak = batteryPeak = 0; windowAt = tick;
         Constraints baseLimits;
@@ -295,8 +321,19 @@ int main(int argc, char** argv) {
         // two-minute QoS hold into `context()` forked one device's physics across masks.
         decayRefusals(refusalState, tick);
         Constraints limits = withTransient(baseLimits, refusalState, tick);
+        // Consumed once per closed window: the allowance below and the armed pair further down
+        // are the two things a sleep invalidates, and both need the same number.
+        const double slept = suspended; suspended = 0;
         // The allowance is charged for the effort that was actually in effect this window.
         allowance.update(current, s, limits, tick - budgetAt);
+        // ...and credited for the part of the gap the device spent asleep. Without this the
+        // allowance is frozen at whatever it held when the phone was put down: the hardware
+        // cools to ambient across twenty minutes of deep sleep while `ceiling()` -- which clamps
+        // every axis in safe() -- does not move, so the minutes after an unlock tune a cold
+        // device as if it were still hot. It refills at the awake idle rate, .0025 per second,
+        // so recovering a drained allowance took three minutes of USE where one minute of sleep
+        // should already have paid for it. That gap was the bug, not the rate.
+        if (slept > 0) { Observation cooled = s; cooled.temp = exitTemp; allowance.relax(cooled, limits, slept); }
         budgetAt = tick;
         brain.budget = allowance.remaining();
         limits.ceiling = allowance.ceiling();
@@ -335,7 +372,14 @@ int main(int argc, char** argv) {
         // Attribute only a stable, verified post-action window. Observe mode never trains on
         // actions it merely proposed; context changes and settling periods invalidate credit.
         if (eligible && canLearn) {
-            if (trimSpanned) {
+            if (slept > SuspendGap) {
+                // The pair straddles a suspend: `before` and `s` are minutes or hours apart with
+                // nothing measured in between, a warm device in one app backed up against a cold
+                // one in another. The 30 s gate below now rejects the long sleeps on its own,
+                // since `at` is boot time -- this catches the short suspends that fall inside its
+                // tolerance and are still not transitions of anything.
+                credit = "suspend_skipped"; eligible = false;
+            } else if (trimSpanned) {
                 // A trim landed inside this pair. Its p95 and paging changes belong to the
                 // release, not to the floor held across it: value, policy and residual all
                 // stay out, and the next window re-arms from the post-trim state.
@@ -535,7 +579,13 @@ int main(int argc, char** argv) {
                << "\nmem_avail_mb=" << (s.memAvailKb > 0 ? s.memAvailKb / 1024 : -1)
                << "\nram_trims=" << totalRamTrims
                << "\nlast_trim_freed_mb=" << (trim.measured ? std::to_string(trim.freedKb / 1024) : "unmeasured")
-               << "\nat=" << monotonic() << '\n';
+               << "\nsuspended_s=" << slept
+               // Boot time, the same clock `adaptive_history.csv` stamps its `at` column with.
+               // Every reader outside this process joins the two -- thermal_report against the
+               // watch log, ab_report against its blocks, measure_ablation against /proc/uptime
+               // for staleness -- and a monotonic value here silently offset all three by however
+               // long the phone had slept since boot, which on a phone in real use is most of it.
+               << "\nat=" << boottime() << '\n';
         atomicText(dir + "/adaptive_status", status.str());
         if ((brain.model.samples > 0 || brain.windows > 0) && tick - savedAt >= 60) {
             if (atomicText(dir + "/adaptive_model", brain.serialize(identity))) savedAt = tick;
@@ -558,7 +608,8 @@ int main(int argc, char** argv) {
                 << ',' << gate << ',' << want.move << ',' << want.advantage
                 << ',' << want.toll << ',' << want.tried << ',' << (want.accepted ? 1 : 0)
                 << ',' << (limits.allowed[0] * 1 + limits.allowed[1] * 2 +
-                           limits.allowed[2] * 4 + limits.allowed[3] * 8) << '\n';
+                           limits.allowed[2] * 4 + limits.allowed[3] * 8)
+                << ',' << slept << '\n';
         pauseFor(std::max(.05, 1. - (monotonic() - tick)));
     }
     if (brain.model.samples > 0 || brain.windows > 0) atomicText(dir + "/adaptive_model", brain.serialize(identity));

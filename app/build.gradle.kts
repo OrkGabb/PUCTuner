@@ -12,7 +12,7 @@ android {
         applicationId = "com.orkgabb.m54tuner"
         minSdk = 33
         targetSdk = 36
-        versionCode = 11
+        versionCode = 12
         versionName = "1.7.0"
     }
 

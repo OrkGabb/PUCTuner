@@ -1,6 +1,7 @@
 #include "../module/engine/platform.hpp"
 #include <cassert>
 #include <cmath>
+#include <limits>
 #include <fstream>
 #include <iostream>
 #include <iomanip>
@@ -83,6 +84,52 @@ int main() {
         Budget freeRide;
         for (int i = 0; i < 200; ++i) freeRide.update(big, cool, c, 6);
         assert(freeRide.remaining() > .99);
+    }
+
+    // ---- suspend: the allowance is charged in wall-clock time, not in awake time ------------
+    {
+        auto cool = s; cool.temp = 40;
+        auto warm = s; warm.temp = 74;
+        Action big; big.level = {4, 4, 4, 1};
+        // A suspended second and an awake idle second buy exactly the same headroom. They are
+        // the same second of the same cooling device; only the daemon's clock told them apart.
+        Budget slept, idled;
+        for (int i = 0; i < 40; ++i) { slept.relax(cool, c, 6); idled.update({}, cool, c, 6); }
+        assert(std::abs(slept.remaining() - idled.remaining()) < 1e-9);
+        // The bug this exists for. Drain the allowance on a hot device, then sleep -- which is
+        // what a phone put down after a heavy session does. CLOCK_MONOTONIC stops there, so the
+        // gap used to reach the daemon as nothing at all and the ceiling stayed where the heavy
+        // session left it: every axis clamped by safe() on a device now at ambient.
+        Budget drained;
+        for (int i = 0; i < 100; ++i) drained.update(big, warm, c, 6);
+        assert(drained.ceiling() <= 1);
+        drained.relax(cool, c, 20 * 60);
+        assert(drained.remaining() > .9 && drained.ceiling() == 4);
+        // It only ever refills. A sleep cannot cost headroom however it is described, because
+        // nothing ran: no effort argument, and no path that subtracts.
+        Budget full;
+        full.relax(warm, c, 3600);
+        assert(full.remaining() > .99);
+        // ...and it is not a way to launder heat into headroom. A device that is still hot on
+        // the way out of the gap earns far less than one at ambient, and an unreadable sensor
+        // earns nothing -- the same conservatism update() applies when it cannot see the die.
+        Budget hot, cold, blind;
+        hot.restore(.2); cold.restore(.2); blind.restore(.2);
+        auto unknown = cool; unknown.thermalValid = false;
+        hot.relax(warm, c, 600); cold.relax(cool, c, 600); blind.relax(unknown, c, 600);
+        assert(blind.remaining() == .2);
+        assert(hot.remaining() < cold.remaining() && hot.remaining() > .2);
+        // Bounded, so a stepped clock cannot be reported as a week of cooling. The cap still
+        // fills an empty allowance several times over, which is why capping costs nothing.
+        Budget stepped, capped;
+        stepped.restore(0); capped.restore(0);
+        stepped.relax(cool, c, 3600); capped.relax(cool, c, 7 * 24 * 3600.);
+        assert(stepped.remaining() == capped.remaining());
+        // Garbage gaps are ignored rather than propagated into the level.
+        Budget guarded; guarded.restore(.5);
+        guarded.relax(cool, c, -5);
+        guarded.relax(cool, c, std::numeric_limits<double>::quiet_NaN());
+        assert(guarded.remaining() == .5);
     }
 
     // ---- reward, minimal intervention and features -----------------------------------------

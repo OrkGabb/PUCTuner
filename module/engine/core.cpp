@@ -295,6 +295,20 @@ int moveIndex(Action from, Action to, const Observation& s, const Constraints& c
     return -1;
 }
 
+// How hot the device is relative to the point where effort starts costing anything, and the
+// rate the allowance moves at, per second, for a given effort at that heat. Both live here
+// rather than inline in each caller because update() and relax() have to agree exactly: a
+// suspended second is defined to be worth an awake idle second, and that identity survives a
+// future retune of the curve only while both paths read the same expression.
+static double thermalLoad(const Observation& s, const Constraints& c) {
+    // An unreadable sensor is treated as fully hot, which drains everything and refills nothing.
+    return s.thermalValid ? clip((s.temp - (c.high - 18)) / 18, 0, 1) : 1;
+}
+static double allowanceRate(double effort, double heat) {
+    const double drain = effort * heat;
+    const double refill = .5 * (1 - heat) * (1 - effort) + .25 * (1 - heat);
+    return (refill - drain) / 300.;
+}
 void Budget::restore(double value) { level = std::isfinite(value) ? clip(value, 0, 1) : 1; }
 void Budget::update(Action applied, const Observation& s, const Constraints& c, double seconds) {
     if (!std::isfinite(seconds) || seconds <= 0) return;
@@ -302,16 +316,24 @@ void Budget::update(Action applied, const Observation& s, const Constraints& c, 
     const double effort = applied.effort() / double(MaxEffort);
     // Effort is free while the device is far from its limit; it only draws down the allowance
     // once the same effort is what keeps the phone warm.
-    const double heat = s.thermalValid ? clip((s.temp - (c.high - 18)) / 18, 0, 1) : 1;
+    const double heat = thermalLoad(s, c);
     // The allowance stays profile-blind on purpose. Draining it faster for Economia was tried as
     // a way to replace the per-profile cap that `safe()` used to apply -- a price instead of a
     // fence -- and it changed nothing in any scenario the simulation can produce, hot ones
     // included: the allowance only binds where high effort meets a hot device, and by then the
     // reward has already priced Economia down to almost no effort. A knob that moves no
     // measurement does not belong here. What restrains a profile is what it pays, in `costs`.
-    const double drain = effort * heat;
-    const double refill = .5 * (1 - heat) * (1 - effort) + .25 * (1 - heat);
-    level = clip(level + (refill - drain) * seconds / 300., 0, 1);
+    level = clip(level + allowanceRate(effort, heat) * seconds, 0, 1);
+}
+void Budget::relax(const Observation& s, const Constraints& c, double seconds) {
+    if (!std::isfinite(seconds) || seconds <= 0) return;
+    // Long enough to fill an empty allowance several times over. Past that the number is more
+    // likely a clock the kernel stepped than a sleep, and a full tank is already the answer.
+    seconds = std::min(seconds, 3600.);
+    // Zero effort through the same rate update() uses, so a suspended second and an awake idle
+    // second are worth exactly the same -- which is the whole point. Nothing ran, so there is no
+    // effort to charge and this can only add.
+    level = clip(level + allowanceRate(0, thermalLoad(s, c)) * seconds, 0, 1);
 }
 int Budget::ceiling() const {
     return level >= .6 ? 4 : level >= .35 ? 3 : level >= .15 ? 2 : level > 0 ? 1 : 0;

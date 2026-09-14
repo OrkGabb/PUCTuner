@@ -1,8 +1,11 @@
 """Paired verdict on the vm.watermark_scale_factor A/B, joined to the engine's own windows.
 
 The A/B script alternates one knob inside a single play session and logs kernel reclaim counters.
-It cannot see frames. The engine's adaptive_history.csv can, and stamps every window with the same
-CLOCK_MONOTONIC the A/B log now carries in `at_mono`, so the two join without a global offset.
+It cannot see frames. The engine's adaptive_history.csv can, and stamps every window with seconds
+since boot, the same clock /proc/uptime gives the A/B log in `at_boot`, so the two join without a
+global offset. `at_mono` is scraped from the engine's status file and is only read here as proof
+the daemon was alive for that block; the windowing is done on `at_boot`, because a monotonic key
+loses every second the phone spent suspended and would offset the two files by all of them.
 
 Why the arithmetic looks the way it does. An alternating design inside one session is confounded
 with everything that drifts across the session -- the scene, the die temperature, the state of
@@ -97,12 +100,12 @@ def blocks(rows):
         inner = block["rows"]
         if inner[0].get("at_mono", -1) <= 0:
             continue  # the engine was not writing its status; this block cannot be joined
-        start = inner[0]["at_mono"] + SETTLE
-        end = inner[-1]["at_mono"]
+        start = inner[0]["at_boot"] + SETTLE
+        end = inner[-1]["at_boot"]
         if end - start < 45:
             continue  # too short to hold enough windows to median
         block["start"], block["end"] = start, end
-        block["usable"] = [r for r in inner if r["at_mono"] >= start]
+        block["usable"] = [r for r in inner if r["at_boot"] >= start]
         if len(block["usable"]) < 5:
             continue
         kept.append(block)

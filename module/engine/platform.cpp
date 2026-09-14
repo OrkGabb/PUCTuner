@@ -74,6 +74,10 @@ double monotonic() {
     timespec ts{}; clock_gettime(CLOCK_MONOTONIC, &ts);
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
+double boottime() {
+    timespec ts{}; clock_gettime(CLOCK_BOOTTIME, &ts);
+    return ts.tv_sec + ts.tv_nsec / 1e9;
+}
 std::vector<std::string> globPaths(const std::string& pattern) {
     glob_t g{}; std::vector<std::string> out;
     if (glob(pattern.c_str(), 0, nullptr, &g) == 0)
@@ -412,7 +416,19 @@ Sampler::Sampler(const std::string& moduleRoot) {
     if (!moduleRoot.empty()) queue.start(moduleRoot + "/bin/runqueue.bpf.o");
 }
 Observation Sampler::read(int cap, bool finishWindow) {
-    Observation s; s.at = monotonic();
+    // Boot time, not monotonic. Every consumer of this field measures how far apart two
+    // observations are: the pair gate in sound(), the thermal trend, and the foreground, paging
+    // and per-thread caches below. CLOCK_MONOTONIC stops in suspend, so a twenty-minute deep
+    // sleep reached all of them as an ordinary six-second step -- the gate that exists to reject
+    // a stale pair could not see the staleness, and every cache carried what it held before the
+    // phone slept straight into the first window after the unlock. The eBPF side already
+    // discarded wakeups that predate a suspend; the userspace side never had the clock to.
+    Observation s; s.at = boottime();
+    // ...and the awake clock alongside it, for the two rates below. `s.at` answers "how
+    // much of the world went by"; these counters only tick while the CPU runs, so their
+    // rates need "how long was the CPU running" instead. The two agree except across a
+    // suspend, which is exactly where getting it wrong would be invisible.
+    const double mono = monotonic();
     // Provisional until the window closes and the real cadence is measured from the frames.
     s.target = std::max(20, std::min(cap, frames.cadence > 0 ? frames.cadence : cap));
     auto stat = readText("/proc/stat", 4096);
@@ -499,7 +515,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
     if (finishWindow) {
         uint64_t majorFaults = prevMajorFaults, swapIn = prevSwapIn, fileRefault = prevFileRefault;
         pagingCounters(majorFaults, swapIn, fileRefault);
-        const double elapsed = s.at - pagingAt;
+        const double elapsed = mono - pagingAt;
         // A counter that went backwards is a wrap or a reset, not negative paging. Such a window
         // is left unmeasured rather than reported, which is the same distinction the frame and
         // queue channels make between "no evidence" and "evidence of zero".
@@ -511,7 +527,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
             s.pagingValid = true;
         }
         prevMajorFaults = majorFaults; prevSwapIn = swapIn; prevFileRefault = fileRefault;
-        pagingAt = s.at;
+        pagingAt = mono;
     }
     if (finishWindow) frames.finish(s, cap);
     if (refresh) {
@@ -532,7 +548,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
         if (s.at - watchedAt >= 6) {
             const auto tids = app.empty() ? std::vector<int>{} : RunqueueProbe::threadsOf(app);
             if (queue.active()) queue.watch(tids);
-            const double elapsed = s.at - threadAt;
+            const double elapsed = mono - threadAt;
             std::map<int, uint64_t> current;
             double busiest = 0;
             for (int tid : tids) {
@@ -554,7 +570,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
             }
             if (!current.empty() && busiest > 0) s.threadPeak = std::clamp(busiest, 0., 1.);
             threadTicks = std::move(current);
-            threadAt = s.at;
+            threadAt = mono;
             watchedAt = s.at;
         }
         // Mid-window reads must report the foreground just detected, not the previous one.
