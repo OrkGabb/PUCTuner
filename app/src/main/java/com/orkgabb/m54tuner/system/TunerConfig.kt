@@ -75,7 +75,6 @@ data class TunerConfig(
     val thermalGuardInterval: Int = 2,
     val thermalGuardTimeout: Int = 900,
     val gos: GosPref = GosPref.UNTOUCHED,
-    val fasrsCompanion: Boolean = true,
     // memory tier
     val zramAlgo: String = "lz4",
     // render tier
@@ -119,18 +118,31 @@ data class TunerConfig(
     val dexoptMode: String = "speed-profile",
     val benchMinSpreadPct: Int = 5,
     val games: List<String> = emptyList(),
+    /** Keys this app has no field for, carried through verbatim. The module seeds keys the UI does
+     *  not expose (`adaptive_ram_management`, `pelt`); rewriting the file from known fields alone
+     *  silently deleted them on the first save, which is how the automatic RAM trim went dark. */
+    val extras: Map<String, String> = emptyMap(),
 ) {
     /** Mirrors the editable portion of engine IdentityKeys, plus the permitted-axis mask (PELT).
      *  Profile prices share the learned physics; changing a context never clears the brain. */
     fun sameLearningContext(other: TunerConfig): Boolean =
         adaptiveTargetFps == other.adaptiveTargetFps &&
             adaptiveThermalLimit == other.adaptiveThermalLimit && thermal == other.thermal &&
-            fasrsCompanion == other.fasrsCompanion && gos == other.gos &&
+            gos == other.gos &&
             fpsUnlock == other.fpsUnlock && samsungPerf == other.samsungPerf &&
             samsungSpcm == other.samsungSpcm && samsungMarsOff == other.samsungMarsOff &&
             adaptivePelt == other.adaptivePelt
 
     fun serialize(): String = buildString {
+        val known = knownLines()
+        append(known)
+        val written = known.lineSequence().map { it.substringBefore('=') }.toSet()
+        for ((key, value) in extras.toSortedMap()) {
+            if (key !in written && KEY.matches(key) && '\n' !in value) appendLine("$key=$value")
+        }
+    }
+
+    private fun knownLines(): String = buildString {
         appendLine("# M54 Tuner config v3 - written by the app, read by the module.")
         appendLine("profile=${profile.toCfg()}")
         appendLine("adaptive_mode=${adaptiveMode.takeIf { it in setOf("active", "observe", "off") } ?: "active"}")
@@ -145,7 +157,6 @@ data class TunerConfig(
         appendLine("thermal_guard_interval=${thermalGuardInterval.coerceIn(1, 10)}")
         appendLine("thermal_guard_timeout=${thermalGuardTimeout.coerceIn(60, 3600)}")
         appendLine("gos=${gos.cfg}")
-        appendLine("fasrs_companion=${if (fasrsCompanion) "auto" else "off"}")
         appendLine("zram_algo=$zramAlgo")
         appendLine("hwui_renderer=$hwuiRenderer")
         appendLine("re_backend=$reBackend")
@@ -171,7 +182,29 @@ data class TunerConfig(
     }
 
     companion object {
-        fun parse(lines: List<String>): TunerConfig {
+        private val KEY = Regex("[A-Za-z0-9_.-]+")
+        private val KNOWN_KEYS: Set<String> by lazy {
+            TunerConfig().knownLines().lineSequence()
+                .map { it.substringBefore('=') }
+                .filter { it.isNotEmpty() && !it.startsWith("#") }
+                .toSet()
+        }
+
+        fun parse(lines: List<String>): TunerConfig =
+            parseKnown(lines).let { cfg ->
+                val extras = LinkedHashMap<String, String>()
+                for (line in lines) {
+                    val t = line.trim()
+                    if (t.isEmpty() || t.startsWith("#")) continue
+                    val i = t.indexOf('=')
+                    if (i <= 0) continue
+                    val key = t.substring(0, i).trim()
+                    if (key !in KNOWN_KEYS && KEY.matches(key)) extras[key] = t.substring(i + 1).trim()
+                }
+                cfg.copy(extras = extras)
+            }
+
+        private fun parseKnown(lines: List<String>): TunerConfig {
             val m = HashMap<String, String>()
             for (line in lines) {
                 val t = line.trim()
@@ -201,7 +234,6 @@ data class TunerConfig(
                     "enabled" -> GosPref.ENABLED
                     else -> GosPref.UNTOUCHED
                 },
-                fasrsCompanion = s("fasrs_companion", "auto") != "off",
                 zramAlgo = s("zram_algo", "lz4"),
                 hwuiRenderer = s("hwui_renderer", "skiagl").let { if (it == "default") "skiagl" else it },
                 reBackend = s("re_backend", "skiaglthreaded")
