@@ -1227,6 +1227,62 @@ int main() {
         noise["render_apps"] = "com.example.game";
         noise["games"] = "com.example.other";
         assert(configIdentity(noise) == current);
+
+        // The map being right is not the same as the brain surviving, and that gap very nearly
+        // shipped: rehoming used to run only for M54_BRAIN_3 payloads, so a CURRENT brain loaded
+        // its cells verbatim under the retired identity, the new context keys never matched them,
+        // and `contexts` went on reporting a full table of knowledge nothing could reach.
+        //
+        // So measure the thing itself. Teach a brain under the old identity, serialise it, load
+        // it under the new one, and require the evidence to still answer.
+        Brain taught;
+        Observation seen = frameScene(), next = seen; next.at += 6;
+        Constraints limits;
+        auto before = context(seen, limits, measured);
+        Action up; up.level[1] = 1;
+        next.p95 = 60; next.jank = .75;
+        for (int i = 0; i < 40; ++i) assert(taught.model.observe(before, seen, {}, up, next));
+        taught.prior.reinforce(before.policy, Tier::Balanced, 2, candidates({}, seen, limits), 1.);
+        const auto cells = taught.model.cells.size();
+        const auto learned = taught.model.predict(before, seen, {}, up).p95;
+        assert(cells > 0 && learned > 40);
+
+        Brain loaded;
+        assert(loaded.deserialize(taught.serialize("device"), "device", rehome));
+        assert(loaded.model.cells.size() == cells);
+        // The point: the same physical context, keyed under the CURRENT identity, finds it.
+        auto after = context(seen, limits, current);
+        assert(after.coarse != before.coarse);
+        assert(std::abs(loaded.model.predict(after, seen, {}, up).p95 - learned) < .001);
+        assert(loaded.model.count(after, {}, up) > 0);
+        assert(loaded.prior.contexts.count(after.policy));
+        // Without the rehoming it is unreachable -- which is exactly what "silent" looked like.
+        Brain orphaned;
+        assert(orphaned.deserialize(taught.serialize("device"), "device"));
+        assert(orphaned.model.cells.size() == cells);           // the table still looks full...
+        assert(orphaned.model.count(after, {}, up) == 0);        // ...and answers nothing.
+
+        // A key the map does NOT mention must come back untouched. It names a surface this
+        // configuration is not on right now -- another target, another governor -- which the
+        // user may well return to, and a rehoming pass has no business rewriting it.
+        //
+        // Caught on the device: rehomeKey strips the tier prefix before it knows whether the
+        // identity is in the map, and the legacy caller hid that forever by dropping the cell on
+        // a miss. Kept instead, every untouched policy key came back as `<app>:...` where it had
+        // been written `1:<app>:...`, so the tier -- the one thing a policy key legitimately
+        // carries -- was silently gone from 61 of this device's 87 policies.
+        Brain elsewhere;
+        auto other = shipped;
+        other["adaptive_target_fps"] = "60";          // a different surface, absent from `rehome`
+        const auto strange = configIdentity(other);
+        assert(!rehome.count(strange));
+        Brain far;
+        auto farKey = context(seen, limits, strange);
+        for (int i = 0; i < 40; ++i) assert(far.model.observe(farKey, seen, {}, up, next));
+        far.prior.reinforce(farKey.policy, Tier::Balanced, 2, candidates({}, seen, limits), 1.);
+        assert(elsewhere.deserialize(far.serialize("device"), "device", rehome));
+        assert(elsewhere.model.count(farKey, {}, up) > 0);
+        assert(elsewhere.prior.contexts.count(farKey.policy));
     }
     {
         // Generations shift instead of overwriting a single `.1`.

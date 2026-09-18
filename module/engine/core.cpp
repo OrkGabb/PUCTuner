@@ -703,28 +703,48 @@ int Replay::rehearse(Critic& critic, std::mt19937& rng, int steps) {
 // One stored key looks like `<coarse>[|buckets]/<from>/<to>` for a residual cell and
 // `<tier>:<coarse>` for a policy cell, where `<coarse>` ends in the configuration identity.
 // Version 3 additionally prefixed every residual key with the tier. `rehome` maps a stored
-// configuration identity onto the current one; a key naming an identity absent from the map was
-// measured on a tuning surface this build cannot reconstruct, and is dropped rather than guessed.
+// configuration identity onto the current one.
+//
+// `tier` says whether the key opens with a tier field; `dropTier` additionally removes it.
+// Returning false means the identity was not in the map, and the two callers read that
+// differently ON PURPOSE. For a version 3 payload it means the surface cannot be reconstructed
+// and the cell is dropped rather than guessed. For a current one it means only that there was
+// nothing to rewrite, and the key is kept exactly as stored.
+//
+// That distinction is the whole reason this runs on current payloads at all. Retiring a key from
+// the identity -- `fasrs_companion` in v0.11.0 -- changes the hash of every context the device
+// has measured, and a v5 brain was being loaded verbatim: the cells stayed in the table under
+// their old identity, the new context keys never matched them, and nothing anywhere reported a
+// number that had changed. `contexts` still read 3072 while every one of them had become
+// unreachable. Silent, and indistinguishable from a brain that simply had not learned anything.
+// `key` is written ONLY on success. It used to be edited in place as the function went, which is
+// invisible while every caller drops the entry on a miss and corrupts it the moment one keeps it:
+// the tier prefix came off before the identity had even been looked up, so a policy key naming a
+// surface absent from the map came back as `<app>:...` where it was stored `1:<app>:...`. On this
+// device that silently took the tier off 61 of 87 policies. Build the answer, then commit it.
 static bool rehomeKey(std::string& key, const std::map<std::string, std::string>& rehome,
-                      bool stripTier) {
+                      bool tier, bool dropTier) {
     if (rehome.empty()) return false;
-    const auto colon = key.find(':');
-    if (colon == std::string::npos || colon > 2) return false;
-    std::string prefix = stripTier ? std::string() : key.substr(0, colon + 1);
-    key.erase(0, colon + 1);
+    std::string prefix, body = key;
+    if (tier) {
+        const auto colon = body.find(':');
+        if (colon == std::string::npos || colon > 2) return false;
+        if (!dropTier) prefix = body.substr(0, colon + 1);
+        body.erase(0, colon + 1);
+    }
     // The configuration identity is the sixth colon-separated field of the coarse part.
     size_t at = 0;
     for (int i = 0; i < 5; ++i) {
-        at = key.find(':', at);
+        at = body.find(':', at);
         if (at == std::string::npos) return false;
         ++at;
     }
-    const auto stop = key.find_first_of("|/", at);
-    const auto id = key.substr(at, stop == std::string::npos ? std::string::npos : stop - at);
+    const auto stop = body.find_first_of("|/", at);
+    const auto id = body.substr(at, stop == std::string::npos ? std::string::npos : stop - at);
     const auto found = rehome.find(id);
     if (found == rehome.end()) return false;
-    key = prefix + key.substr(0, at) + found->second +
-        (stop == std::string::npos ? std::string() : key.substr(stop));
+    key = prefix + body.substr(0, at) + found->second +
+        (stop == std::string::npos ? std::string() : body.substr(stop));
     return true;
 }
 // Seeds the per-term predictor from the per-tier value functions of an older brain. For every
@@ -901,7 +921,9 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
             // An older residual key carries the tier it was measured under. Dropping that prefix
             // is what merges the two halves of one device's physics back together; where both
             // halves hold the same edge, the evidence is pooled instead of one of them winning.
-            if (legacy && !rehomeKey(key, rehome, true)) continue;
+            // Residual keys carry no tier of their own; version 3's did.
+            if (legacy) { if (!rehomeKey(key, rehome, true, true)) continue; }
+            else rehomeKey(key, rehome, false, false);
             auto seat = restored.model.cells.find(key);
             if (seat == restored.model.cells.end()) {
                 if (restored.model.cells.size() >= Model::MaxEntries) return false;
@@ -958,7 +980,8 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
             for (auto& x : cell.logit) if (!(in >> x) || !bounded(x, 1.5)) return false;
             // A policy key keeps its tier: preference over moves is the one thing that
             // legitimately differs between objectives. Only the identity inside it is rehomed.
-            if (legacy && !rehomeKey(key, rehome, false)) continue;
+            if (legacy) { if (!rehomeKey(key, rehome, true, false)) continue; }
+            else rehomeKey(key, rehome, true, false);
             if (!restored.prior.contexts.emplace(key, cell).second ||
                 restored.prior.contexts.size() > Prior::MaxContexts) return false;
         } else if (tag == "R") {
