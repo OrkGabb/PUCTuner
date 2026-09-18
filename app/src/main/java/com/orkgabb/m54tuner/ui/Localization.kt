@@ -135,13 +135,12 @@ private val EN_REPLACEMENTS = listOf(
     "Ajustes manuais" to "Manual settings",
     "Experimentos" to "Experiments",
     "Esta alteração muda o contexto usado pelo motor. Ele pode precisar de novas medições para esta configuração. O aprendizado anterior e os contadores totais não são apagados. Ao voltar à configuração anterior, os contextos ainda guardados podem ser reutilizados." to "This change switches the context used by the engine. It may need new measurements for this configuration. Previous learning and total counters are not erased. Returning to the previous configuration can reuse contexts that are still stored.",
-    "Os ajustes marcados pedem confirmação antes de mudar o contexto. Limite adaptativo e companheiro fas-rs também o alteram, mas são apenas leitura nesta tela. PELT muda os eixos disponíveis. Zram, ART, renderizador e listas não mudam a identidade da configuração, mas podem afetar a carga, o consumo e a fluidez." to "Marked settings ask for confirmation before switching context. The adaptive limit and fas-rs companion also change it, but are read-only here. PELT changes the available axes. Zram, ART, renderer and lists do not change configuration identity, but may affect load, energy use and smoothness.",
+    "Os ajustes marcados pedem confirmação antes de mudar o contexto. O limite adaptativo também o altera, mas é apenas leitura nesta tela. PELT muda os eixos disponíveis. Zram, ART, renderizador e listas não mudam a identidade da configuração, mas podem afetar a carga, o consumo e a fluidez." to "Marked settings ask for confirmation before switching context. The adaptive limit also changes it, but is read-only here. PELT changes the available axes. Zram, ART, renderer and lists do not change configuration identity, but may affect load, energy use and smoothness.",
     "Janelas, amostras e contextos são totais da memória guardada; a confiança é do avaliador compartilhado." to "Windows, samples and contexts are totals across stored memory; confidence belongs to the shared critic.",
-    "Com o controle adaptativo ativo, o motor ajusta a janela da GPU conforme as medições. Se o fas-rs estiver ativo, ele controla CPU/GPU. Os valores desta aba são apenas leitura." to "With adaptive control active, the engine adjusts the GPU window using measurements. If fas-rs is active, it controls CPU/GPU. Values in this tab are read-only.",
+    "Com o controle adaptativo ativo, o motor ajusta a janela da GPU conforme as medições. Os valores desta aba são apenas leitura." to "With adaptive control active, the engine adjusts the GPU window using measurements. Values in this tab are read-only.",
     "Leitura · resultados observados no aparelho" to "Read-only · results observed on the device",
     "Leitura · controle automático" to "Read-only · automatic control",
     "Limite adaptativo · leitura" to "Adaptive limit · read-only",
-    "Companheiro fas-rs · leitura" to "fas-rs companion · read-only",
     "Alterar contexto de aprendizado?" to "Switch learning context?",
     "Aplicar alteração" to "Apply change",
     "Muda o contexto" to "Changes context",
@@ -164,8 +163,6 @@ private val EN_REPLACEMENTS = listOf(
     "Janela creditada ao avaliador; sem amostra de ajuste" to "Window credited to the critic; no adjustment sample",
     "Ocioso: revisando janelas já medidas" to "Idle: rehearsing already measured windows",
     "Snapshot ausente. O motor adaptativo mantém sua própria captura reversível da sessão." to "Snapshot unavailable. The adaptive engine keeps its own reversible session capture.",
-    "O fas-rs é opcional. Quando ativo, possui CPU/GPU; o M54 respeita essa divisão." to "fas-rs is optional. When running, it owns CPU/GPU; M54 respects this ownership.",
-    "fas-rs controla CPU/GPU; M54 ajusta barramento e I/O." to "fas-rs controls CPU/GPU; M54 tunes the memory bus and I/O.",
     "Restaura o snapshot capturado antes dos ajustes." to "Restores the snapshot captured before tuning.",
     "MCTS · memória local por aplicativo e perfil" to "MCTS · local memory per app and profile",
     "Observação: propostas sem aplicação nem treino" to "Observation: proposals without applying or training",
@@ -211,14 +208,6 @@ private val EN_REPLACEMENTS = listOf(
         "Module not installed — flash m54tuner-module.zip in KernelSU.",
     "Snapshot de fábrica ausente: 'Balanceado' não restaura. Rode uma vez num boot limpo." to
         "Factory snapshot missing: Balanced cannot restore stock. Run once after a clean boot.",
-    "fas-rs detectado: o Game cede o DVFS de CPU a ele." to
-        "fas-rs is running: Game delegates CPU DVFS to it.",
-    "fas-rs instalado, mas o daemon está parado — modo companheiro inativo." to
-        "fas-rs is installed, but its daemon is stopped — companion mode is inactive.",
-    "fas-rs não instalado — sem efeito por enquanto." to
-        "fas-rs is not installed — no effect for now.",
-    "fas-rs decide o DVFS; aqui vão GPU, MIF, I/O, PELT e térmico." to
-        "fas-rs controls DVFS; this profile handles GPU, MIF, I/O, PELT and thermal settings.",
     "Piso alto de CPU/GPU/MIF, PELT 2×, I/O mq-deadline, fila e readahead maiores." to
         "Higher CPU/GPU/MIF floors, 2× PELT, mq-deadline I/O and larger queue/readahead.",
     "Restaura o snapshot de fábrica capturado num boot limpo." to
@@ -260,8 +249,8 @@ private val EN_REPLACEMENTS = listOf(
         "background apps before trying — it first attempts to make room.",
     "A Samsung reconstrói como lzo-rle todo boot; o módulo reaplica a sua escolha." to
         "Samsung rebuilds zram as lzo-rle on every boot; the module reapplies your choice.",
-    "O app abre sem esperar fork+preload — é a fatia da abertura que o fas-rs não alcança." to
-        "Apps open without waiting for fork+preload — the part of startup fas-rs cannot optimize.",
+    "O app abre sem esperar fork+preload — a fatia da abertura que nenhum ajuste de DVFS alcança." to
+        "Apps open without waiting for fork+preload — the part of startup no DVFS tuning can reach.",
     "Play Store e ART service compilam em cpu0-3, sem roubar os A78 durante o jogo." to
         "Play Store and ART Service compile on cpu0-3 without taking the A78 cores from a game.",
     "Instalar e atualizar app fica mais lento: 4 núcleos pequenos em vez de 8." to
@@ -395,11 +384,10 @@ private val EN_REPLACEMENTS = listOf(
     "desligado" to "disabled",
     "ligado" to "enabled",
     "Samsung" to "Samsung",
-    "GOS e integração com o fas-rs" to "GOS and fas-rs integration",
+    "GOS e serviços de energia da Samsung" to "GOS and Samsung power services",
     "Game Optimizing Service" to "Game Optimizing Service",
     "Ligado, a Samsung limita clocks por jogo. Desligar é reversível." to
         "When enabled, Samsung limits clocks per game. Disabling is reversible.",
-    "Modo companheiro do fas-rs" to "fas-rs companion mode",
     "Extensão API v4" to "API v4 extension",
     "observadora carregada" to "observer loaded",
     "Desligar os limitadores da OneUI" to "Disable One UI limiters",

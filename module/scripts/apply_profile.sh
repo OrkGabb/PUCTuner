@@ -14,14 +14,10 @@ PROFILE=balanced
 case "${M54_PROFILE_OVERRIDE:-}" in game|balanced|powersave|none) PROFILE="$M54_PROFILE_OVERRIDE";; esac
 THERMAL=$(read_cfg thermal moderate)
 GOS=$(read_cfg gos untouched)
-FASRS=$(read_cfg fasrs_companion auto)
 case "$PROFILE" in game|balanced|powersave|none) ;; *) PROFILE=none;; esac
 case "$THERMAL" in moderate|aggressive) ;; *) THERMAL=moderate;; esac
 case "$GOS" in untouched|disabled|enabled) ;; *) GOS=untouched;; esac
 
-COMPANION=0
-# A live external DVFS owner is authoritative even if the UI preference was switched off.
-has_fasrs && COMPANION=1
 ADAPTIVE=0
 [ "$(read_cfg adaptive_mode active)" = active ] && [ -x "${DIR%/*}/bin/m54-adaptive" ] && ADAPTIVE=1
 
@@ -29,7 +25,7 @@ result_begin "profile:$PROFILE"
 if ! sh "$DIR/adaptive_stop.sh"; then rep adaptive.stop fail busy stopped; result_end; exit 1; fi
 if ! begin_apply_lock; then rep module.lock fail busy profile; result_end; exit 1; fi
 trap 'end_apply_lock' EXIT INT TERM
-log "apply profile=$PROFILE thermal=$THERMAL gos=$GOS companion=$COMPANION"
+log "apply profile=$PROFILE thermal=$THERMAL gos=$GOS"
 
 fget() { grep -E "^$1=" "$FACTORY" 2>/dev/null | tail -1 | cut -d= -f2-; }
 # ovr <cfg-key> — user override from the config; empty means the profile preset wins.
@@ -51,11 +47,7 @@ ovr() {
 }
 
 # ================= CPU =================
-# Companion mode: fas-rs owns the CPU DVFS decisions (frame-aware eBPF beats a static floor), so we
-# only restore the factory window and never fight it. The governor stays ours either way — fas-rs
-# drives frequencies through the same governor, it does not replace it.
 apply_cpu() {
-  [ "$COMPANION" = 1 ] && { rep cpu.owner skip fas-rs fas-rs; return; }
   local gov_ovr
   gov_ovr=$(ovr cpu_gov)
   for p in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -65,10 +57,7 @@ apply_cpu() {
     hwmin=$(cat "$p/cpuinfo_min_freq")
     hwmax=$(cat "$p/cpuinfo_max_freq")
     table=$(cat "$p/scaling_available_frequencies" 2>/dev/null)
-    if [ "$COMPANION" = 1 ]; then
-      min=""; max=""      # fas-rs owns the window — see the skip below
-    else
-      case "$PROFILE" in
+    case "$PROFILE" in
         game)
           max=$hwmax
           min=$(nearest "$(ratio_freq "$hwmin" "$hwmax" 60)" "$table")
@@ -86,29 +75,13 @@ apply_cpu() {
           min=$(fget "cpu_${tag}_min"); [ -z "$min" ] && min=$hwmin
           max=$(fget "cpu_${tag}_max"); [ -z "$max" ] && max=$hwmax
           ;;
-      esac
-    fi
+    esac
     gov="$gov_ovr"
     if [ -z "$gov" ]; then
       gov=$(fget "cpu_${tag}_gov"); [ -z "$gov" ] && gov=energy_aware
     fi
     if grep -qw "$gov" "$p/scaling_available_governors" 2>/dev/null; then
       apply_node "cpu.$tag.gov" "$p/scaling_governor" "$gov"
-    fi
-    if [ "$COMPANION" = 1 ]; then
-      # Hand the window BACK to factory before letting fas-rs drive it. Simply skipping the write
-      # was wrong: a floor we had written while fas-rs was down stayed behind, so entering companion
-      # mode left our old Game floor pinned under a scheduler that thought it owned the window.
-      # Verified loosely (ceiling/atleast) because fas-rs re-caps within a second — that is its job,
-      # not a failed write.
-      local fmin fmax
-      fmin=$(fget "cpu_${tag}_min"); [ -z "$fmin" ] && fmin=$hwmin
-      fmax=$(fget "cpu_${tag}_max"); [ -z "$fmax" ] && fmax=$hwmax
-      write_silent "$p/scaling_min_freq" "$hwmin"
-      apply_node "cpu.$tag.max" "$p/scaling_max_freq" "$fmax" ceiling
-      apply_node "cpu.$tag.min" "$p/scaling_min_freq" "$fmin" atleast
-      rep "cpu.$tag.owner" skip fas-rs "-"
-      continue
     fi
     write_silent "$p/scaling_min_freq" "$hwmin"     # drop the floor first so min<=max always holds
     # "ceiling" whenever we are RAISING the window, not only at the hardware maximum. A thermal
@@ -130,7 +103,6 @@ apply_cpu() {
 # The GPU is where this device has the most unused headroom, so every knob the driver accepts is
 # exposed: governor, clock window, the highspeed ramp triple, the power policy and the CL boost.
 apply_gpu() {
-  [ "$COMPANION" = 1 ] && { rep gpu.owner skip fas-rs fas-rs; return; }
   if [ ! -r /sys/kernel/gpu/gpu_freq_table ]; then rep gpu skip - -; return; fi
   local M=/sys/class/misc/mali0/device
   local table hwmin hwmax min max gov hsl hsc hsd pp clb
@@ -182,26 +154,13 @@ apply_gpu() {
   # ORDER IS LOAD-BEARING: switching the Exynos GPU governor resets the min/max locks, so the
   # governor goes first and the clock window is locked after it.
   [ -n "$gov" ] && apply_node gpu.gov /sys/kernel/gpu/gpu_governor "$gov"
-  if [ "$PROFILE" = game ] && [ "$COMPANION" = 1 ]; then
-    # Companion mode defers the FLOOR to fas-rs — never the ceiling. Skipping the max write left
-    # whatever the previous profile had set: coming back to Game from Economia kept a 552 MHz cap on
-    # a GPU that can do 949, and nothing in the report said so because we simply never wrote it.
-    if [ "$max" = "$hwmax" ]; then
-      apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max" ceiling
-    else
-      apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max"
-    fi
-    apply_node gpu.min /sys/kernel/gpu/gpu_min_clock "$hwmin"
-    rep gpu.owner skip fas-rs "-"
+  write_silent /sys/kernel/gpu/gpu_min_clock "$hwmin"
+  if [ "$max" = "$hwmax" ]; then
+    apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max" ceiling
   else
-    write_silent /sys/kernel/gpu/gpu_min_clock "$hwmin"
-    if [ "$max" = "$hwmax" ]; then
-      apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max" ceiling
-    else
-      apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max"
-    fi
-    apply_node gpu.min /sys/kernel/gpu/gpu_min_clock "$min"
+    apply_node gpu.max /sys/kernel/gpu/gpu_max_clock "$max"
   fi
+  apply_node gpu.min /sys/kernel/gpu/gpu_min_clock "$min"
   [ -n "$hsl" ] && apply_node gpu.hs_load  "$M/highspeed_load"  "$hsl"
   [ -n "$hsc" ] && apply_node gpu.hs_clock "$M/highspeed_clock" "$hsc"
   [ -n "$hsd" ] && apply_node gpu.hs_delay "$M/highspeed_delay" "$hsd"
@@ -514,8 +473,7 @@ apply_ufs() {
     *)    q1=$(fget ufs_qos_cluster1); [ -z "$q1" ] && q1=1248000 ;;
   esac
   # This is a transient boost the UFS driver requests only while I/O is in flight, not a standing
-  # floor, so it complements fas-rs instead of fighting it — fas-rs schedules frames and knows
-  # nothing about a texture being pulled off storage.
+  # floor, so it does not compete with the adaptive engine's own CPU and GPU floors.
   [ -e "$p/pm_qos_cluster1" ] && apply_node ufs.qos_big "$p/pm_qos_cluster1" "$q1"
 }
 
@@ -596,7 +554,6 @@ apply_cpuidle() {
 
 # ================= PELT (quasi-WALT responsiveness; 1/2/4 only) =================
 apply_pelt() {
-  [ "$COMPANION" = 1 ] && [ -z "${M54_BENCH_PELT:-}" ] && { rep pelt.owner skip fas-rs fas-rs; return; }
   local P=/proc/sys/kernel/sched_pelt_multiplier v
   if [ ! -w "$P" ]; then rep pelt skip - -; return; fi
   case "${M54_BENCH_PELT:-}" in

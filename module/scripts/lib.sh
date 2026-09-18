@@ -160,7 +160,7 @@ apply_node() {
   case "$rc" in
     0) rep "$key" ok "$got" "$value" ;;
     2) rep "$key" skip "-" "$value" ;;
-    # Another module made the node read-only (fas-rs and friends protect what they manage).
+    # Another module made the node read-only: foreign tuners chmod what they mean to keep.
     # Calling that our failure would be wrong; calling it applied would be worse.
     3) rep "$key" skip "bloqueado" "$value"; log "LOCKED $key want=$value" ;;
     4) rep "$key" warn "$got" "$value"; log "CLAMPED $key want=$value got=$got" ;;
@@ -184,36 +184,6 @@ nearest() {
 
 # ratio_freq <min> <max> <pct>
 ratio_freq() { echo $(( $1 + $3 * ($2 - $1) / 100 )); }
-
-# has_fasrs — companion mode hands the CPU/GPU DVFS over to fas-rs, so it has to be certain fas-rs
-# is actually DRIVING. Checking only the module directory was wrong: with the daemon dead (crashed,
-# killed, or never started under temp-root) the directory is still there, so we deferred to nobody
-# and the device ended up with no floor at all — neither ours nor fas-rs's.
-# Note the module id differs by build: the official zip installs as `fas_rs`, forks use `fas-rs`.
-fasrs_installed() {
-  [ "$(getprop fas-rs-installed 2>/dev/null)" = true ] && return 0
-  local d
-  for d in /data/adb/modules/fas_rs /data/adb/modules/fas-rs \
-           /data/adb/modules_update/fas_rs /data/adb/modules_update/fas-rs; do
-    [ -d "$d" ] && [ ! -f "$d/disable" ] && return 0
-  done
-  return 1
-}
-
-has_fasrs() {
-  local d found=1
-  # On temp-root/LKM the daemon and /dev API can be visible while SELinux denies this shell
-  # directory traversal under /data/adb. A healthy live daemon is stronger evidence than a path.
-  if pidof fas-rs >/dev/null 2>&1; then
-    [ "$(getprop fas-rs-server-started 2>/dev/null)" = true ] && return 0
-    [ -d /dev/fas_rs ] && return 0
-  fi
-  for d in /data/adb/modules/fas_rs /data/adb/modules/fas-rs            /data/adb/modules_update/fas_rs /data/adb/modules_update/fas-rs; do
-    [ -d "$d" ] && [ ! -f "$d/disable" ] && found=0
-  done
-  [ "$found" = 0 ] || return 1
-  pidof fas-rs >/dev/null 2>&1
-}
 
 # ---------------------------------------------------------------------------
 # PROPS — resetprop wrapper. `pset` sets, `pdel` deletes (back to firmware default).

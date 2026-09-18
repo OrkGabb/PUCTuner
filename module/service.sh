@@ -5,17 +5,6 @@
 MODDIR=${0%/*}
 . "$MODDIR/scripts/lib.sh"
 
-# API v4 observer. Copying/creating a Lua file in this directory is the official hot-reload path.
-# Keep it observer-only until the callbacks are validated on-device; no DVFS node has two owners.
-install_fas_extension() {
-  local ext=/dev/fas_rs/extensions/m54tuner.lua i=0
-  [ -f "$MODDIR/fas/m54tuner.lua" ] || return 0
-  while [ ! -d /dev/fas_rs/extensions ] && [ "$i" -lt 90 ]; do sleep 1; i=$((i + 1)); done
-  [ -d /dev/fas_rs/extensions ] || { log "fas-rs extension directory unavailable"; return 0; }
-  cp -f "$MODDIR/fas/m54tuner.lua" "$ext" 2>/dev/null && chmod 0644 "$ext" 2>/dev/null
-}
-install_fas_extension &
-
 SESSION=/dev/.m54tuner_session
 BOOT_LOCK=/dev/.m54tuner_boot_lock
 if [ -e "$SESSION" ]; then

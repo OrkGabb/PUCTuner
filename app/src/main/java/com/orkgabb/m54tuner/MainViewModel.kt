@@ -269,9 +269,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         edit(Tier.LIVE, "Guardião térmico ${onOff(on)}") { it.copy(thermalGuard = on) }
 
     fun setGos(pref: GosPref) = edit(Tier.LIVE, "GOS ${pref.cfg}") { it.copy(gos = pref) }
-    fun toggleCompanion(on: Boolean) =
-        edit(Tier.LIVE, "Companheiro fas-rs ${if (on) "auto" else "off"}") { it.copy(fasrsCompanion = on) }
-
     /** Disruptive (kills cached background apps), so it warns once — same pattern as Aggressive/
      *  FPS/zram. Fires only when apply_profile.sh actually runs with profile=game afterwards. */
     fun setGameRamClear(on: Boolean) {

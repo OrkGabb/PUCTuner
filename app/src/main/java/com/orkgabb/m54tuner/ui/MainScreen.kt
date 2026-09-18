@@ -196,11 +196,7 @@ private fun Header(state: MainUiState, vm: MainViewModel) {
             Column(Modifier.weight(1f)) {
                 Text("M54 Tuner", style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Exynos 1380 · Mali-G68 MP5" + when {
-                        d.fasrs -> " · fas-rs"
-                        d.fasrsInstalled -> " · fas-rs (${localize("parado", LocalAppLanguage.current)})"
-                        else -> ""
-                    },
+                    "Exynos 1380 · Mali-G68 MP5",
                     style = MaterialTheme.typography.bodySmall,
                     color = TextTertiary,
                 )
@@ -434,7 +430,6 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
             }
             Spacer(Modifier.height(10.dp))
             InfoRow("Limite adaptativo · leitura", "${cfg.adaptiveThermalLimit} °C")
-            InfoRow("Companheiro fas-rs · leitura", if (cfg.fasrsCompanion) "Auto" else "Desligado")
             Spacer(Modifier.height(8.dp))
             Note("Ajustes sinalizados alteram o contexto de aprendizado do motor.", TextTertiary)
         }
@@ -698,7 +693,7 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
     }
 
     item {
-        SectionCard("Samsung", "GOS e integração com o fas-rs", BalancedAccent, busy) {
+        SectionCard("Samsung", "GOS e serviços de energia da Samsung", BalancedAccent, busy) {
             // Follows the real package state, so it can never claim something the system denies.
             SwitchRow(
                 "Game Optimizing Service",
@@ -722,13 +717,6 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
                 InfoRow("restricted_device_performance", sm["restricted_perf"] ?: "—")
                 InfoRow("Boost de responsividade", if (sm["cpu_resp"] == "1") "ligado" else "desligado")
                 InfoRow("Economia adaptativa", if (sm["adaptive_ps"] == "0") "desligada" else "LIGADA")
-            }
-            Spacer(Modifier.height(10.dp))
-            InfoRow("Dono de CPU/GPU", if (state.device.fasrs) "fas-rs" else "M54 / kernel")
-            Note("O fas-rs é opcional. Quando ativo, possui CPU/GPU; o M54 respeita essa divisão.", BalancedAccent)
-            if (state.device.fasrsExtension) {
-                Spacer(Modifier.height(6.dp))
-                InfoRow("Extensão API v4", "observadora carregada")
             }
         }
     }
@@ -969,7 +957,7 @@ private fun LazyListScope.appsTab(state: MainUiState, vm: MainViewModel) {
             val artOn = on && !state.busy(Tier.ART)
             FeatureSwitch(
                 "Processos prontos no zygote (USAP)",
-                "O app abre sem esperar fork+preload — é a fatia da abertura que o fas-rs não alcança.",
+                "O app abre sem esperar fork+preload — a fatia da abertura que nenhum ajuste de DVFS alcança.",
                 "2 a 4 processos ociosos ocupando RAM. A Samsung desliga de fábrica.",
                 cfg.artUsap == TriState.ON, artOn, WarnAccent, badge = "recomendado",
             ) { vm.setArtUsap(if (it) TriState.ON else TriState.OFF) }

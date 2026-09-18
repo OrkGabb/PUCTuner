@@ -7,15 +7,15 @@ if ! type abort >/dev/null 2>&1; then
   abort() { ui_print "$1"; exit 1; }
 fi
 
-ui_print "- M54 Tuner (module) — executor de perfis em contexto init"
+ui_print "- PUCTuner (module): init-context tuning daemon"
 
 DEVICE=$(getprop ro.product.device 2>/dev/null)
 SOC=$(getprop ro.soc.model 2>/dev/null)
 case "$DEVICE" in m54x|m54xxx|SM-M546B) ;;
-  *) abort "! Dispositivo incompatível: $DEVICE (M54/SM-M546B exigido)" ;;
+  *) abort "! Unsupported device: $DEVICE (M54 / SM-M546B required)" ;;
 esac
 case "$SOC" in s5e8835|S5E8835|Exynos1380|"") ;;
-  *) abort "! SoC incompatível: $SOC (s5e8835 exigido)" ;;
+  *) abort "! Unsupported SoC: $SOC (s5e8835 required)" ;;
 esac
 
 M54_DIR=/data/adb/m54tuner
@@ -34,7 +34,6 @@ adaptive_target_fps=60
 adaptive_thermal_limit=82
 thermal=moderate
 gos=untouched
-fasrs_companion=auto
 # GPU overrides ("" = use the profile preset)
 protect_games=0
 samsung_perf=0
@@ -45,7 +44,7 @@ protect_list=
 protect_adj=-700
 protect_interval=1
 game_ram_clear=1
-adaptive_ram_management=1
+adaptive_ram_management=0
 pelt=2
 thermal_guard=1
 thermal_guard_high=78000
@@ -71,7 +70,7 @@ dexopt_mode=speed-profile
 bench_min_spread_pct=5
 CFG
   chmod 0600 "$M54_DIR/config"
-  ui_print "- Config padrao criada em $M54_DIR/config"
+  ui_print "- Default config written to $M54_DIR/config"
 else
   # Older config: add keys introduced through v3 without touching existing choices.
   # the user already made.
@@ -85,7 +84,7 @@ else
   add_key protect_adj -700
   add_key protect_interval 1
   add_key game_ram_clear 1
-  add_key adaptive_ram_management 1
+  add_key adaptive_ram_management 0
   add_key pelt 2
   add_key thermal_guard 1
   add_key thermal_guard_high 78000
@@ -106,16 +105,11 @@ else
   add_key bench_min_spread_pct 5
   add_key render_apps ""
   add_key restart_systemui 0
-  ui_print "- Config existente preservada (chaves novas da v3 adicionadas)"
+  ui_print "- Existing config kept (new v3 keys added)"
 fi
 
 chmod 0600 "$M54_DIR/config" 2>/dev/null
 touch "$MODPATH/skip_mount"
-
-if [ "$(getprop fas-rs-installed 2>/dev/null)" = true ] || \
-   [ -d /data/adb/modules/fas_rs ] || [ -d /data/adb/modules/fas-rs ]; then
-  ui_print "- fas-rs detectado: modo companheiro (Game cede DVFS de CPU/GPU ao fas-rs)"
-fi
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755

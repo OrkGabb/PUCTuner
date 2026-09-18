@@ -20,9 +20,6 @@ if [ -f "$M54_DIR/adaptive_status" ]; then
   sed 's/^/adaptive./' "$M54_DIR/adaptive_status"
 fi
 [ -f "$FACTORY" ] && echo "factory=1" || echo "factory=0"
-has_fasrs && echo "fasrs=1" || echo "fasrs=0"
-fasrs_installed && echo "fasrs.installed=1" || echo "fasrs.installed=0"
-[ -f /dev/fas_rs/extensions/m54tuner.lua ] && echo "fasrs.extension=1" || echo "fasrs.extension=0"
 # Computed, never read from the flag files: those are a cache that only an apply refreshes, so a
 # SurfaceFlinger that restarted on its own left the banner up forever.
 pending_for "$M54_DIR/render_state" sf_at surfaceflinger && echo "pending_sf=1" || echo "pending_sf=0"

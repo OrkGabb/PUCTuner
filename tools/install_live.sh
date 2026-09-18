@@ -23,7 +23,6 @@ adaptive_thermal_limit=82
 thermal=moderate
 thermal_guard=1
 gos=untouched
-fasrs_companion=auto
 auto_game=0
 game_ram_clear=0
 CFG

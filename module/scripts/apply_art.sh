@@ -42,8 +42,8 @@ trap 'end_apply_lock' EXIT INT TERM
 # 1. USAP — Unspecialized App Process pool. Zygote keeps N pre-forked, pre-warmed processes ready,
 #    so a cold app start skips fork+preload. Samsung ships it DISABLED (probed: usap_pool_enabled
 #    =false, max=3, min=1). The cost is a couple of idle processes; on 8 GB that is a good trade,
-#    and it is completely orthogonal to fas-rs (which schedules threads that already exist — it
-#    cannot help with the part of a cold start that happens before the process exists).
+#    and it is orthogonal to anything that schedules threads which already exist: none of that
+#    helps with the part of a cold start that happens before the process exists.
 # ---------------------------------------------------------------------------
 case "$USAP" in
   on)
@@ -65,8 +65,8 @@ esac
 # 2. dex2oat on the little cluster. Background compilation (Play Store updates, the ART service's
 #    idle dexopt, our own AOT pass) is a CPU hog that lands on whatever core the scheduler likes —
 #    including the A78s, in the middle of a game. Pinning it to cpu0-3 with 4 threads keeps the big
-#    cluster for the foreground. This is the ART tweak that matters most next to fas-rs: fas-rs
-#    raises the game's threads, this stops the loudest competitor from sitting on the big cores.
+#    cluster for the foreground. This is the ART tweak that matters most next to the DVFS floors:
+#    they raise what the game gets, this stops the loudest competitor sitting on the big cores.
 #    Probed factory values: dex2oat-threads and dex2oat-cpu-set are both EMPTY (no restriction).
 # ---------------------------------------------------------------------------
 case "$DEXCPU" in
