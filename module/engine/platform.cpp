@@ -116,8 +116,96 @@ std::string command(const std::vector<std::string>& args, int timeoutMs, int* ex
     if (exitCode && complete && WIFEXITED(status)) *exitCode = WEXITSTATUS(status);
     return complete && WIFEXITED(status) && WEXITSTATUS(status) == 0 ? output : std::string{};
 }
-std::string processConflict(bool& fas) {
-    fas = false; std::string conflict;
+// The context identity must track the tuning surface the engine competes with, not every switch
+// the app happens to own. Hashing the whole file gave observe and active different identities, so
+// alternating the two -- the only way to compare them in a game where pointing the camera at the
+// sky changes the frame rate -- would have started a fresh context every switch and learned
+// nothing. The same mistake, larger: 52 keys reached this hash, so changing the zram algorithm,
+// the dexopt mode or the hand-written game list orphaned every residual cell and every policy
+// the device had measured. Worse, `profile` was one of them, which split the transition model by
+// preference on top of the tier already doing it -- measured here as 552 of 730 cells that
+// differed by nothing else.
+//
+// What belongs here is what changes how the device answers the engine's own writes: the DVFS
+// surface, the limits it must respect, and who else owns a lever. Everything else -- renderer,
+// ART, zram, protection lists, dexopt -- changes the workload, and the workload is already
+// measured, window by window, in the feature vector. It is state, not identity.
+const char* const IdentityKeys[] = {
+    "adaptive_target_fps", "adaptive_thermal_limit", "thermal", "gos",
+    "cpu_gov", "io_sched", "gpu_gov", "gpu_min", "gpu_max", "gpu_hs_load", "gpu_hs_clock",
+    "gpu_hs_delay", "gpu_power_policy", "gpu_cl_boost", "gpu_dvfs_period", "gpu_polling_speed",
+    "gpu_js_period", "mif_min", "int_min", "disp_min", "ufs_rpm_lvl", "f2fs_ipu", "fps_unlock",
+    "samsung_perf", "samsung_spcm", "samsung_mars_off",
+};
+// Keys that were in the identity and are not any more, each with the position it occupied and
+// the values it could have held. Removing a key changes the hash of every context the device has
+// ever measured, which orphans the brain -- silently, since an orphaned identity simply finds no
+// cells. That is the same loss the profile rehoming below exists to prevent, and it needs the
+// same treatment rather than a comment saying the key is gone.
+//
+// `fasrs_companion` retired in v0.11.0 with the companion mode itself: the engine no longer
+// yields axes to fas-rs, it stands down from it like any other foreign tuner, so the setting no
+// longer describes anything about the surface being tuned.
+const struct { size_t at; const char* key; const char* values[3]; } RetiredIdentityKeys[] = {
+    {3, "fasrs_companion", {"auto", "off", ""}},
+};
+std::string identityOf(const std::map<std::string, std::string>& cfg,
+                              const std::vector<std::string>& keys) {
+    std::ostringstream out;
+    // `adaptive_pelt` is deliberately absent: which axes are permitted already reaches the
+    // context as the allowed-axis mask, and hashing it here would say the same thing twice while
+    // orphaning everything each time it is toggled.
+    for (const auto& key : keys) {
+        const auto found = cfg.find(key);
+        out << key << '=' << (found == cfg.end() ? std::string() : found->second) << '\n';
+    }
+    return std::to_string(hash(out.str()));
+}
+std::vector<std::string> identityKeys() {
+    return {std::begin(IdentityKeys), std::end(IdentityKeys)};
+}
+std::string configIdentity(const std::map<std::string, std::string>& cfg) {
+    return identityOf(cfg, identityKeys());
+}
+// Identities this exact configuration would have produced under the previous rule. `profile` was
+// inside that hash, so the same static surface yielded a different identity per profile; every
+// one of those is provably the same surface as the current one and is rehomed onto it. An
+// identity that matches none of them came from a configuration that cannot be reconstructed, and
+// its cells are dropped instead of being folded in under a label they did not earn.
+std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::string> cfg,
+                                                           const std::string& current) {
+    std::map<std::string, std::string> rehome;
+    for (const char* profile : {"game", "balanced", "powersave", "none"}) {
+        auto probe = cfg;
+        probe["profile"] = profile;
+        std::ostringstream out;
+        for (const auto& [key, setting] : probe) {
+            if (key == "adaptive_mode" || key == "adaptive_learning") continue;
+            if (key == "adaptive_pelt" && (setting.empty() || setting == "1")) continue;
+            out << key << '=' << setting << '\n';
+        }
+        rehome[std::to_string(hash(out.str()))] = current;
+    }
+    // ...and the identities this configuration produced while a now-retired key was still part
+    // of the hash. The value the key actually held is not recorded anywhere, so every value it
+    // could have taken is offered; they are all the same physical surface, which is the whole
+    // reason the key was retired. One retirement at a time: a second one would need the cross
+    // product, and a silent partial answer is worse than an assert the day that happens.
+    static_assert(sizeof(RetiredIdentityKeys) / sizeof(RetiredIdentityKeys[0]) == 1,
+                  "rehoming more than one retired key needs the cross product of their values");
+    for (const auto& retired : RetiredIdentityKeys) {
+        for (const char* value : retired.values) {
+            auto keys = identityKeys();
+            keys.insert(keys.begin() + static_cast<long>(retired.at), retired.key);
+            auto probe = cfg;
+            probe[retired.key] = value;
+            rehome[identityOf(probe, keys)] = current;
+        }
+    }
+    return rehome;
+}
+std::string processConflict() {
+    std::string conflict;
     for (const auto& p : globPaths("/proc/[0-9]*/cmdline")) {
         auto text = readText(p, 8192);
         std::replace(text.begin(), text.end(), '\0', ' ');
@@ -131,8 +219,15 @@ std::string processConflict(bool& fas) {
         char link[4096]{};
         const auto length = readlink(("/proc/" + pid + "/exe").c_str(), link, sizeof(link) - 1);
         const std::string identity = text + ' ' + (length > 0 ? std::string(link, length) : "");
+        // fas-rs is a conflict, not a companion. It was the one foreign tuner this engine did
+        // NOT stand down for: it set a flag that yielded the CPU and GPU axes and then went on
+        // learning, so every window it ran through produced a before/after pair whose CPU and
+        // GPU floors moved because ANOTHER process moved them, credited to whatever this engine
+        // had chosen. That is the poisoned attribution the encore episode was made of, built in
+        // on purpose. Two frame-aware tuners on one device is a misconfiguration; refusing to
+        // act and saying so in `reason` is worth more than half-working beside it.
         if (identity.find("fas-rs") != std::string::npos &&
-            identity.find(" run") != std::string::npos) fas = true;
+            identity.find(" run") != std::string::npos) conflict = "fas-rs";
         if (identity.find("ProjectRaco") != std::string::npos ||
             identity.find("raco_service") != std::string::npos) conflict = "ProjectRaco";
         if (identity.find("/encore/") != std::string::npos ||
@@ -199,6 +294,22 @@ std::string chooseLayer(const std::string& dump, const std::string& app) {
     }
     return best;
 }
+bool windowComplete(double span, size_t frames) {
+    // The ceiling is absolute: past it the pair gate would reject whatever was measured.
+    if (span >= WindowCeiling) return true;
+    // So is the floor, for the same reason from the other side.
+    if (span < WindowFloor) return false;
+    // The evidence is in. Holding the window open longer only widens the chance that the
+    // workload moves underneath a measurement that is already repeatable.
+    if (frames >= WindowFrames) return true;
+    if (span < WindowNominal) return false;
+    // Past the nominal span with a frame channel that exists but has not reached the cliff:
+    // keep collecting. This is the 27% of rendering windows that a fixed six seconds handed to
+    // the critic as noise. Below MinimumFrames there is no frame channel to complete, and every
+    // other channel in the window is a rate that the nominal span already measures -- waiting
+    // there would spend throughput to learn nothing.
+    return frames < MinimumFrames;
+}
 void FrameTracker::addLatency(const std::string& dump, double now) {
     std::istringstream in(dump); std::string line;
     // The header is the compositor's vsync period in nanoseconds, not a frame. This M54 panel
@@ -227,7 +338,7 @@ void FrameTracker::addLatency(const std::string& dump, double now) {
     }
 }
 void FrameTracker::finish(Observation& s, int cap) {
-    s.frames = static_cast<int>(samples.size()); s.framesValid = samples.size() >= 24;
+    s.frames = static_cast<int>(samples.size()); s.framesValid = samples.size() >= MinimumFrames;
     s.frameStart = first / 1e9;
     s.frameEnd = first > 0 ? last / 1e9 : 0;
     s.frameTimeMs = 0;
@@ -326,11 +437,10 @@ static double psi(const std::string& path) {
     auto data = readText(path, 1024); auto pos = data.find("avg10=");
     return pos == std::string::npos ? 0 : std::clamp(number(data.substr(pos + 6), 0) / 100, 0., 1.);
 }
-long availableMemoryKb() {
-    std::string text = readText("/proc/meminfo", 1024);
-    auto pos = text.find("MemAvailable:");
+static long meminfoField(const std::string& text, const std::string& key) {
+    auto pos = text.find(key);
     if (pos == std::string::npos) return -1;
-    pos += 13;
+    pos += key.size();
     while (pos < text.size() && (text[pos] == ' ' || text[pos] == '\t')) ++pos;
     long val = 0;
     while (pos < text.size() && text[pos] >= '0' && text[pos] <= '9') {
@@ -338,6 +448,12 @@ long availableMemoryKb() {
         ++pos;
     }
     return val;
+}
+long availableMemoryKb() { return meminfoField(readText("/proc/meminfo", 4096), "MemAvailable:"); }
+void swapMemoryKb(long& totalKb, long& freeKb) {
+    const auto text = readText("/proc/meminfo", 4096);
+    totalKb = meminfoField(text, "SwapTotal:");
+    freeKb = meminfoField(text, "SwapFree:");
 }
 bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Observation& s,
                          bool transition, bool benchmark, double sinceLastAttempt) {
@@ -470,6 +586,7 @@ Observation Sampler::read(int cap, bool finishWindow) {
     s.gpu = std::clamp(number(readText("/sys/kernel/gpu/gpu_busy", 64), 0) / 100, 0., 1.);
     s.cpuPsi = psi("/proc/pressure/cpu"); s.memPsi = psi("/proc/pressure/memory"); s.ioPsi = psi("/proc/pressure/io");
     s.memAvailKb = availableMemoryKb();
+    swapMemoryKb(s.swapTotalKb, s.swapFreeKb);
     int readTemps = 0;
     for (const auto& [path, zone] : thermals) {
         double t = number(readText(path, 64)) / 1000.;
@@ -663,7 +780,7 @@ bool Actuator::writeOwned(const std::string& path, long value) {
     if (!writeText(path, std::to_string(value) + '\n')) return false;
     return static_cast<long>(number(readText(path, 64), -1)) == value;
 }
-Constraints Actuator::constrain(Constraints c, const std::map<std::string, std::string>& cfg, bool fas) const {
+Constraints Actuator::constrain(Constraints c, const std::map<std::string, std::string>& cfg) const {
     auto has = [&](const std::string& key) { auto it = cfg.find(key); return it != cfg.end() && !it->second.empty(); };
     std::array<bool, 4> present{};
     for (const auto& n : nodes) {
@@ -671,8 +788,6 @@ Constraints Actuator::constrain(Constraints c, const std::map<std::string, std::
         if (n.axis == 3 ? n.original < 4 : n.table.size() > 1) present[n.axis] = true;
     }
     for (int i = 0; i < 4; ++i) c.allowed[i] = c.allowed[i] && present[i];
-    // A running fas-rs always owns DVFS, even if someone toggled companion off in the UI.
-    if (fas) { c.allowed[0] = false; c.allowed[1] = false; c.allowed[3] = false; }
     if (has("cpu_gov")) c.allowed[0] = false;
     if (has("gpu_min") || has("gpu_max") || has("gpu_gov") || has("gpu_power_policy")) c.allowed[1] = false;
     if (has("mif_min")) c.allowed[2] = false;

@@ -20,7 +20,16 @@ std::vector<std::string> globPaths(const std::string& pattern);
 // `exitCode`, when asked for, distinguishes "ran and failed" from "ran and printed nothing",
 // which the return value alone cannot: both are the empty string. -1 means it never ran.
 std::string command(const std::vector<std::string>& args, int timeoutMs = 1500, int* exitCode = nullptr);
-std::string processConflict(bool& fas);
+// Names a foreign tuner writing the same DVFS nodes, or empty. The caller stands down while it
+// is non-empty: measuring beside a second writer trains the model on another process's writes.
+// Which tuning surface the engine is learning on, hashed from the configuration keys that
+// change how the device answers its own writes. `legacyIdentities` maps the hashes older
+// layouts produced for this same surface onto the current one, so retiring a key or
+// reshaping the hash never silently orphans a brain.
+std::string configIdentity(const std::map<std::string, std::string>& cfg);
+std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::string> cfg,
+                                                    const std::string& current);
+std::string processConflict();
 // Tuning nodes that exist but are not writable. A node another module left at mode 0444 is a
 // different failure from a node this kernel does not have, and reporting both as "absent"
 // loses a capability without ever saying why. Observed on this device: both CPU governors and
@@ -29,6 +38,7 @@ std::vector<std::string> lockedTuningNodes();
 std::string foreground(const std::string& activityDump);
 std::string chooseLayer(const std::string& dump, const std::string& app);
 long availableMemoryKb();
+void swapMemoryKb(long& totalKb, long& freeKb);
 // Stable capability versus transient permission. `constrain()` reports which axes the
 // device and configuration allow at all; short write rejections must never rewrite that
 // answer, or the context identity fragments across masks. Keep both: the stable mask feeds
@@ -74,12 +84,52 @@ inline ContextKey stableKey(const Observation& s, const Constraints& base,
 // long-session investigations to whatever happened to survive last.
 void rotateGenerations(const std::string& path, int keep = 3);
 // Automatic process termination is a separate, explicit opt-in from the one-shot Game action.
+// Deliberately NOT triggered by swap occupancy: a full zram after the user opened many apps is the
+// cache doing its job, and killing it turns every routine app open into a cold start that costs
+// more CPU and battery than the refault it avoids.
 bool automaticRamTrimDue(const std::map<std::string, std::string>& cfg, const Observation& s,
                          bool transition, bool benchmark, double sinceLastAttempt);
 // Fires the trim and says only whether the request was accepted. How much it actually freed is
 // deliberately NOT returned: teardown and reclaim are asynchronous, so the only honest answer
 // comes from the next window's MemAvailable, and main.cpp is where that comparison belongs.
 bool trimBackgroundMemory();
+// A measurement window closes on evidence, not on the clock.
+//
+// Every learned label rests on the p95 of the window's frame intervals, and the repeatability of
+// that statistic is a step function of how many intervals went into it. Measured across 456 pairs
+// of consecutive windows holding the same app, the same action and the same cadence, with no
+// suspend in either (one week of this device's own history, 2026-09-17):
+//
+//     frames  40- 80   n= 52   |dp95|/p95 med 0.491   |d deficit| med 0.0439
+//     frames  80-150   n= 80   |dp95|/p95 med 0.342   |d deficit| med 0.0062
+//     frames 150-250   n=212   |dp95|/p95 med 0.003   |d deficit| med 0.0011
+//     frames 250-400   n= 80   |dp95|/p95 med 0.002   |d deficit| med 0.0004
+//
+// Two windows of one unchanged device state have to agree or the critic is being trained on a
+// label that contradicts itself -- the same failure as the cadence random-walk of 2026-09-09,
+// reaching it through the sample size instead of through the denominator. The cliff is at 150.
+//
+// A fixed six seconds misses it in both directions, because the frame count is cadence times
+// COVERAGE and the coverage is the part that varies: the median window presented for only 56% of
+// its span. 27% of rendering windows never reached 150 intervals and were learned from anyway,
+// while a window that had 150 in four seconds spent the remaining two adding nothing. Simulated
+// over the same history, closing on evidence leaves the mean span at 5.98 s -- the sample rate is
+// unchanged -- and moves the share of rendering windows at or above the cliff from 73% to 89%,
+// with the noisy 24-80 band falling from 9.3% to 1.4%.
+//
+// Both bounds are set by sound()'s pair gate rather than by the frame statistics: it rejects a
+// pair closer together than 4 s or further apart than 30 s, so a window may never close before
+// 4.5 s however much evidence it has, nor run past 12 s however little.
+constexpr double WindowFloor = 4.5;
+constexpr double WindowNominal = 6.;
+constexpr double WindowCeiling = 12.;
+constexpr size_t WindowFrames = 150;
+// The frame channel exists at all from here up; below it finish() reports framesValid = false.
+// Shared with FrameTracker::finish so the close rule and the validity rule cannot drift apart.
+constexpr size_t MinimumFrames = 24;
+// `frames` is what the still-open window has accumulated so far. Pure, so the rule is testable
+// without a device: main.cpp owns the clock, this owns the decision.
+bool windowComplete(double span, size_t frames);
 struct FrameTracker {
     int64_t last = 0;
     int64_t first = 0;
@@ -121,6 +171,11 @@ public:
     // the kernel leaves the probe off and every other source working exactly as before.
     explicit Sampler(const std::string& moduleRoot = {});
     Observation read(int cap, bool finishWindow);
+    // Frame intervals the still-open window has accumulated. The caller decides whether to close
+    // BEFORE it calls read(), so this is the count as of the previous 1 Hz poll: it lags by up to
+    // one second of frames and is therefore a floor, never an overcount. A window closed on it
+    // holds at least the frames it was asked for.
+    size_t pendingFrames() const { return frames.samples.size(); }
     bool probeActive() const { return queue.active(); }
     const std::string& probeReason() const { return queue.reason(); }
 };
@@ -142,7 +197,7 @@ class Actuator {
     bool writeOwned(const std::string& path, long value);
 public:
     explicit Actuator(const std::string& dataDir, std::vector<Node> testNodes = {});
-    Constraints constrain(Constraints c, const std::map<std::string, std::string>& cfg, bool fas) const;
+    Constraints constrain(Constraints c, const std::map<std::string, std::string>& cfg) const;
     bool apply(Action action, const Constraints& limits);
     bool restore();
     bool verified() const;

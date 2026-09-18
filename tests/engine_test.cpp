@@ -287,11 +287,79 @@ int main() {
         assert(m.count(k, {}, up) <= 1);
         assert(m.cells.at(unrelatedId).count == unrelatedCount && m.cells.at(unrelatedId).mean == unrelatedMean);
         // Without a visible shock at zero effort, alternatives must still become testable
-        // again. Age is measured in real accepted samples, not simulated search nodes.
+        // again. Age is measured in real accepted samples, not simulated search nodes, and on
+        // the REVISIT clock rather than the evidence one -- the two were separated because a
+        // memory long enough for prediction is far too long to re-ask a question with.
         for (int i = 0; i < 512; ++i) assert(m.observe(k, seen, {}, {}, next));
         assert(m.count(other, {}, up) < 3);
+        // ...while what the model actually knows is untouched by that clock. This is the pair
+        // the single half-life could not satisfy at once: testable again, still remembered.
         assert(m.cells.at(unrelatedId).count == unrelatedCount); // retained raw evidence
         assert(m.cells.at(unrelatedId).mean == unrelatedMean);
+        assert(m.predict(other, seen, {}, up).p95 != Model{}.predict(other, seen, {}, up).p95);
+    }
+
+    // ---- fine cells are a refinement, not a second copy ---------------------------------------
+    {
+        Model m;
+        auto seen = frameScene(), next = seen; next.at += 6;
+        auto k = context(seen, c, "promotion");
+        assert(k.fine != k.coarse);
+        Action up; up.level[1] = 1;
+        const auto fineId = k.fine + "/0/" + std::to_string(up.id());
+        const auto coarseId = k.coarse + "/0/" + std::to_string(up.id());
+        // Below the promotion bar exactly one cell exists, and it is the parent. The old
+        // behaviour stored the same measurement twice, in two keys neither of which could reach
+        // the trust weight in predict().
+        for (unsigned i = 0; i < Model::FinePromotion; ++i) {
+            assert(m.observe(k, seen, {}, up, next));
+            assert(!m.cells.count(fineId));
+            assert(m.cells.at(coarseId).count == i + 1);
+        }
+        assert(m.cells.size() == 1);
+        // The parent has enough to refine now, so the child opens -- and starts empty rather
+        // than inheriting, because predict() already reads the parent through the backoff.
+        assert(m.observe(k, seen, {}, up, next));
+        assert(m.cells.at(fineId).count == 1);
+        assert(m.cells.at(coarseId).count == Model::FinePromotion + 1);
+        // Promotion is one-way. A surprise knocks every count in the workload back to one, which
+        // puts the parent below the bar again; the already-open fine cell must keep being
+        // written rather than be silently demoted and lose the means it measured.
+        for (int i = 0; i < 16; ++i) assert(m.observe(k, seen, {}, up, next));
+        auto shock = next; shock.p95 += 40;
+        assert(m.observe(k, seen, {}, up, shock));
+        // The surprise reopened the workload: both counts are back at the floor, which is below
+        // the promotion bar. The fine cell is still there, and still the one being written.
+        assert(m.surprises == 1);
+        assert(m.cells.at(coarseId).count < Model::FinePromotion);
+        const auto fineMean = m.cells.at(fineId).mean;
+        assert(m.observe(k, seen, {}, up, next));
+        assert(m.cells.count(fineId) && m.cells.at(fineId).mean != fineMean);
+    }
+
+    // ---- eviction keeps evidence, not recency -------------------------------------------------
+    {
+        Model m;
+        auto seen = frameScene(), next = seen; next.at += 6;
+        Action up; up.level[1] = 1;
+        // One well-measured edge, then enough distinct one-shot contexts to fill the table.
+        auto studied = context(seen, c, "studied");
+        const auto studiedId = studied.coarse + "/0/" + std::to_string(up.id());
+        for (int i = 0; i < 64; ++i) assert(m.observe(studied, seen, {}, up, next));
+        const auto held = m.cells.at(studiedId).count;
+        assert(held >= 32);
+        // Promotion means each filler context opens exactly one cell, so this overruns the table
+        // by 256 and forces that many evictions. (The loop cannot be written as "until size
+        // exceeds MaxEntries": eviction is what holds the size there.)
+        for (size_t i = 0; i < Model::MaxEntries + 256; ++i) {
+            auto k = context(seen, c, "filler" + std::to_string(i));
+            assert(m.observe(k, seen, {}, up, next));
+        }
+        assert(m.cells.size() == Model::MaxEntries);
+        // Under the old rule this cell was gone: it was touched long before the filler storm,
+        // and every one of those single-observation cells was newer than it.
+        assert(m.cells.count(studiedId));
+        assert(m.cells.at(studiedId).count == held);
     }
 
     // ---- coarse backoff: a cold fine cell inherits the same app's coarse experience ----------
@@ -299,6 +367,10 @@ int main() {
         auto shifted = s; shifted.temp = 58; shifted.batteryTemp = 36;
         auto shiftedKey = context(shifted, c, "test");
         assert(shiftedKey.fine != key.fine && shiftedKey.coarse == key.coarse);
+        // No cell of its own at this temperature, and count() says so: the novelty budget is
+        // per fine bucket on purpose, so a new thermal regime may re-ask what a floor buys
+        // there. See Model::count for the run that proved this is load-bearing.
+        assert(!brain.model.cells.count(shiftedKey.fine + "/0/" + std::to_string(gpu.id())));
         assert(brain.model.count(shiftedKey, {}, gpu) == 0);
         Brain cold;
         double naive = cold.model.predict(shiftedKey, shifted, {}, gpu).p95;
@@ -317,11 +389,17 @@ int main() {
         assert(!accept(gate.model, gateKey, s, {}, up, c, false));
         assert(accept(gate.model, gateKey, s, {}, up, c, true));
         auto nothingGained = s; nothingGained.at += 6; // same p95: the boost bought nothing
-        for (int i = 0; i < 6; ++i) assert(gate.model.observe(gateKey, s, {}, up, nothingGained));
+        // The budget is read off the fine cell, which does not open until its coarse parent has
+        // FinePromotion observations, so it is spent that many windows later than the bare
+        // constant in accept() suggests. That delay is the price of not storing the first few
+        // measurements of every edge twice, and it lands on the side the simulator prefers:
+        // more exploration, not less.
+        const int spend = 6 + static_cast<int>(Model::FinePromotion);
+        for (int i = 0; i < spend; ++i) assert(gate.model.observe(gateKey, s, {}, up, nothingGained));
         assert(!accept(gate.model, gateKey, s, {}, up, c, true)); // novelty budget is spent
         // Releasing keeps a wider budget than spending: it is the recoverable direction.
         assert(accept(gate.model, gateKey, s, up, {}, c, true));
-        for (int i = 0; i < 6; ++i) assert(gate.model.observe(gateKey, s, up, {}, nothingGained));
+        for (int i = 0; i < spend; ++i) assert(gate.model.observe(gateKey, s, up, {}, nothingGained));
         assert(accept(gate.model, gateKey, s, up, {}, c, true));
     }
 
@@ -344,7 +422,11 @@ int main() {
         // carry it: accepted stays true with exploration OFF, which is the state this device
         // spends a third of its gameplay in once the battery passes 39 C.
         auto better = s; better.at += 6; better.p95 = 12; better.jank = .05;
-        for (int i = 0; i < 6; ++i) assert(gate.model.observe(key, s, {}, up, better));
+        // `tried` reports the fine cell, which opens only once its coarse parent has
+        // FinePromotion observations, so six MEASURED windows have to be six windows behind
+        // the fine cell rather than six in total.
+        const int measured = 6 + static_cast<int>(Model::FinePromotion);
+        for (int i = 0; i < measured; ++i) assert(gate.model.observe(key, s, {}, up, better));
         auto earned = ambition(gate.model, key, s, {}, one, false);
         assert(earned.tried >= 6);
         assert(earned.advantage >= earned.toll && earned.accepted);
@@ -355,7 +437,7 @@ int main() {
         Brain flat;
         auto flatKey = context(s, c, "ambition-flat");
         auto nothing = s; nothing.at += 6;
-        for (int i = 0; i < 6; ++i) assert(flat.model.observe(flatKey, s, {}, up, nothing));
+        for (int i = 0; i < measured; ++i) assert(flat.model.observe(flatKey, s, {}, up, nothing));
         auto refused = ambition(flat.model, flatKey, s, {}, one, false);
         assert(refused.tried >= 6 && !refused.accepted);
         assert(refused.advantage < refused.toll);
@@ -808,28 +890,30 @@ int main() {
         auto withPelt = nodes;
         withPelt.push_back({dir + "/pelt", "", "", 3});
         Actuator writer(dir, withPelt);
-        const auto enabled = writer.constrain(c, {}, false);
+        const auto enabled = writer.constrain(c, {});
         assert(enabled.allowed[0] && enabled.allowed[3]);
         Action boost; boost.level[3] = 1;
         assert(writer.apply(boost, enabled) && number(readText(dir + "/pelt")) == 2);
         // A config transition restores ownership before planning on the restricted surface.
         assert(writer.restore());
-        const auto disabled = writer.constrain(c, {{"adaptive_pelt", "0"}}, false);
+        const auto disabled = writer.constrain(c, {{"adaptive_pelt", "0"}});
         assert(disabled.allowed[0] && !disabled.allowed[3]);
         for (const auto& choice : candidates(boost, s, disabled)) assert(choice.action.level[3] == 0);
         assert(writer.apply(safe(boost, s, disabled), disabled));
         assert(number(readText(dir + "/pelt")) == 1);
-        assert(!writer.constrain(c, {{"adaptive_pelt", "1"}}, true).allowed[3]);
+        // The fas-rs argument that used to close CPU, GPU and PELT here is gone with the
+        // companion mode: a running fas-rs is a conflict now, so the engine stands down
+        // entirely rather than tuning a reduced surface beside a second writer.
         file(dir + "/pelt", "2");
         Actuator fast(dir, withPelt);
-        assert(fast.constrain(c, {}, false).allowed[3]);
+        assert(fast.constrain(c, {}).allowed[3]);
         Action boost4; boost4.level[3] = 2;
         assert(fast.apply(boost4, enabled) && number(readText(dir + "/pelt")) == 4);
         assert(fast.restore() && number(readText(dir + "/pelt")) == 2);
         file(dir + "/pelt", "4");
         Actuator maxed(dir, withPelt);
-        assert(!maxed.constrain(c, {}, false).allowed[3]);
-        assert(maxed.constrain(c, {}, false).allowed[0]);
+        assert(!maxed.constrain(c, {}).allowed[3]);
+        assert(maxed.constrain(c, {}).allowed[0]);
     }
     {
         // A floor we do not own may be moved under us between windows -- Samsung's top-app QoS
@@ -915,6 +999,18 @@ int main() {
         assert(!automaticRamTrimDue(cfg, lowMemory, false, false, 120));
         lowMemory.memPsi = .09;
         assert(automaticRamTrimDue(cfg, lowMemory, false, false, 120));
+
+        // A full zram on its own never trims: the launcher window measured 2026-09-14, right
+        // after the user opened every app in sight, had zram 85% full, 457 swap-ins/s and no
+        // frames. Killing that cache would make each of those apps cold-start next time.
+        Observation cached;
+        cached.awake = true; cached.app = "com.sec.android.app.launcher";
+        cached.memAvailKb = 2300000; cached.framesValid = false;
+        cached.pagingValid = true; cached.swapIn = 457;
+        cached.swapTotalKb = 4194300; cached.swapFreeKb = 643032;
+        assert(!automaticRamTrimDue(cfg, cached, false, false, 600));
+        cached.framesValid = true;
+        assert(!automaticRamTrimDue(cfg, cached, false, false, 600));
     }
     {
         // One armed trim spans exactly the pair ending at the next window, measured or not.
@@ -1032,6 +1128,105 @@ int main() {
         Brain loaded;
         assert(loaded.deserialize(carved.serialize("scale-proof"), "scale-proof"));
         assert(loaded.critic.scale[0][6] == 0.0);
+    }
+    {
+        // ---- the measurement window closes on evidence, not on the clock ----------------------
+        // The pair gate in sound() is the outer contract: nothing this rule emits may land
+        // closer than 4 s or further than 30 s, or the window is measured and then discarded.
+        assert(!windowComplete(0, 100000));
+        assert(!windowComplete(WindowFloor - .01, 100000));
+        assert(windowComplete(WindowFloor, WindowFrames));
+        assert(windowComplete(WindowCeiling, 0));
+        assert(WindowFloor > 4. && WindowCeiling < 30.);
+
+        // A fast, fully covered window is done early: 150 intervals is where two measurements of
+        // one unchanged state start agreeing, and the rest of the span only widens the chance
+        // that the workload moves underneath a label that was already repeatable.
+        assert(windowComplete(WindowFloor, WindowFrames + 1));
+        assert(!windowComplete(WindowFloor, WindowFrames - 1));
+
+        // A thin window is NOT done at the nominal span. This is the 27% of rendering windows
+        // that a fixed six seconds handed to the critic as noise.
+        assert(!windowComplete(WindowNominal, WindowFrames - 1));
+        assert(!windowComplete(WindowNominal, MinimumFrames));
+        assert(windowComplete(WindowNominal, WindowFrames));
+
+        // ...but only while there is a frame channel to complete. Below the validity floor there
+        // is nothing to wait for: every other channel is a rate the nominal span already has,
+        // and holding the window open would spend throughput to learn nothing. This is the
+        // frameless case, which is two windows in three on this device.
+        assert(windowComplete(WindowNominal, 0));
+        assert(windowComplete(WindowNominal, MinimumFrames - 1));
+
+        // Simulated over one week of this device's own history the rule is throughput-neutral:
+        // mean span 5.98 s against a fixed 6.00. That claim is what actually justifies the
+        // change -- better labels at the same sample rate -- so it is pinned here rather than
+        // left in a commit message. The population is this device's measured one: 64.3% of
+        // windows present no frames at all, and the rendering remainder is represented by the
+        // deciles of its present rate (2320 windows, 2026-09-17). A future retune that buys
+        // quality by halving the sample rate fails this.
+        const double frameless = .643;
+        const double renderingRates[] = {.2, 11.5, 18.5, 27.2, 31., 31.3, 33., 43.7, 58.2, 63.};
+        auto close = [](double rate) {
+            for (int step = 0;; ++step) {
+                const double t = WindowFloor + step * .05;
+                if (t >= WindowCeiling) return WindowCeiling;
+                if (windowComplete(t, static_cast<size_t>(rate * t))) return t;
+            }
+        };
+        double total = frameless * WindowNominal;
+        int atCliff = 0, rendering = 0;
+        for (double rate : renderingRates) {
+            const double span = close(rate);
+            total += (1 - frameless) * span / 10;
+            const auto frames = static_cast<size_t>(rate * span);
+            if (frames >= MinimumFrames) { ++rendering; if (frames >= WindowFrames) ++atCliff; }
+        }
+        assert(total > 5.9 && total < 6.05);
+        // Nine deciles carry a frame channel; eight of them reach the cliff. The one that does
+        // not is the ~11.5 fps decile, which holds 138 intervals even at the ceiling -- so about
+        // a tenth of rendering windows are still measured below the cliff, down from 27%. That
+        // residue is a real limit of this rule, not something the numbers above hide.
+        assert(rendering == 9 && atCliff == 8);
+    }
+    {
+        // ---- retiring an identity key must not orphan the brain ------------------------------
+        // `configIdentity` hashes the configuration keys that describe the tuning surface, and
+        // every context the device has ever measured is filed under that hash. Remove a key from
+        // the list and the hash changes, so a brain with a week of measurements in it simply
+        // finds no cells and starts over -- with nothing in any log to say why.
+        //
+        // The number below is not synthetic. It is the configId carried by every cell of this
+        // device's saved model on 2026-09-17, under the key list that still contained
+        // `fasrs_companion`. If the rehoming stops covering it, this fails here instead of on
+        // the phone.
+        const std::map<std::string, std::string> shipped{
+            {"profile", "balanced"}, {"adaptive_mode", "active"}, {"adaptive_learning", "1"},
+            {"adaptive_pelt", "1"}, {"adaptive_target_fps", "120"},
+            {"adaptive_thermal_limit", "82"}, {"thermal", "moderate"}, {"thermal_guard", "1"},
+            {"gos", "untouched"}, {"zram_algo", "lz4"}, {"hwui_renderer", "skiagl"},
+            {"re_backend", "skiaglthreaded"}, {"fps_unlock", "1"}, {"restart_systemui", "1"},
+            {"art_usap", "off"}, {"protect_adj", "-700"}, {"protect_interval", "1"},
+            {"game_ram_clear", "1"}, {"loading_boost_seconds", "45"},
+            {"dexopt_mode", "speed-profile"}, {"bench_min_spread_pct", "5"},
+            {"samsung_perf", "0"}, {"samsung_protect", "0"}, {"samsung_spcm", "0"},
+            {"samsung_mars_off", "0"}, {"adaptive_ram_management", "0"},
+        };
+        const std::string measured = "10124605214796042609";
+        const auto current = configIdentity(shipped);
+        assert(current != measured); // the retirement really does move the hash
+        const auto rehome = legacyIdentities(shipped, current);
+        assert(rehome.count(measured) && rehome.at(measured) == current);
+        // A configuration that never held the retired key rehomes too: the value is not recorded
+        // anywhere, so every value it could have taken has to be offered.
+        auto off = shipped;
+        off["fasrs_companion"] = "off";
+        assert(legacyIdentities(off, current).count(measured));
+        // And the current identity is stable across the keys that are NOT part of the surface.
+        auto noise = shipped;
+        noise["render_apps"] = "com.example.game";
+        noise["games"] = "com.example.other";
+        assert(configIdentity(noise) == current);
     }
     {
         // Generations shift instead of overwriting a single `.1`.

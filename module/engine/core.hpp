@@ -31,6 +31,11 @@ struct Action {
 struct Observation {
     double at = 0, cpu = 0, gpu = 0, cpuPsi = 0, memPsi = 0, ioPsi = 0;
     long memAvailKb = 0;
+    // Swap occupancy from /proc/meminfo. Telemetry only: MemAvailable read 2.3 GB while 3.5 of
+    // 4 GB of zram was occupied (2026-09-14, after opening many apps on purpose). Whether that
+    // occupancy costs anything on this device is a question for measured windows, and it must
+    // never trigger process kills -- a full cache of routine apps is what spares cold starts.
+    long swapTotalKb = 0, swapFreeKb = 0;
     // Busiest single core, and busiest single thread of the foreground app, both as a fraction
     // of one core. Aggregate utilisation cannot see a saturated thread: one core pinned at 100%
     // of eight reads as 12.5% overall, which is what a CPU-bound game looks like to a controller
@@ -247,6 +252,11 @@ public:
 class Model {
 public:
     static constexpr size_t MaxEntries = 3072;
+    // Observations a coarse cell must hold before its fine children may be opened. Four is where
+    // predict() starts trusting a cell at all -- the trust weight is evidence/(evidence+4) -- so
+    // below it a fine cell could not have influenced a prediction even if it existed, and all it
+    // did was occupy a slot and halve the evidence its parent would otherwise have accumulated.
+    static constexpr unsigned FinePromotion = 4;
     std::map<std::string, Experience> cells;
     uint64_t samples = 0;
     uint64_t surprises = 0; // current process; evidence counts themselves are persisted

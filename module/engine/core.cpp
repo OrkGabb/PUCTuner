@@ -471,17 +471,63 @@ static Observation heuristic(const Observation& s, Action from, Action to) {
     p.at += 6;
     return p;
 }
-static double freshEvidence(const Experience& e, uint64_t samples) {
-    // Evidence about an unvisited action ages while real measurements accrue. A zero-action
-    // state may look identical before and after a hardware intervention becomes useful again;
-    // prediction-error detection alone cannot discover that counterfactual. Keep occasionally
-    // revisiting it, under the existing exploration/safety budget, without manufacturing data.
+// A cell's evidence decays with age, in samples -- not in windows and not in wall-clock time,
+// since `touched` stamps the global sample counter. There are TWO half-lives because the decay
+// was doing two jobs that want opposite answers, and running both on one constant meant one of
+// them was always wrong.
+//
+//   Prediction asks "how much of this residual do I believe?". That wants a long memory: the
+//   measurement does not stop being true because the phone was used for something else since.
+//
+//   The novelty budget asks "is it time to re-test this alternative?". That wants a short clock,
+//   and deliberately forgets: a zero-action state may look identical before and after a hardware
+//   intervention becomes useful again, so prediction-error detection alone can never discover
+//   that counterfactual. Something has to re-ask, without manufacturing data.
+//
+// One constant of 64 served the second job and destroyed the first. Measured on the saved brain
+// after a week (8989 samples, 3072 cells at the cap): median cell staleness was 1730 samples, so
+// the median cell had decayed by 2^-27. Of 3072 cells, 55 still held one effective observation
+// and 9 held four -- and all 9 of those were self-edges (0->0, 25->25). Not one transition edge
+// survived. predict(), whose trust weight is evidence/(evidence+4), had therefore been running
+// on the cold-start heuristic alone with a week of measurements sitting in the file unable to
+// reach it. At 1024 the same brain keeps 267 cells at one observation and 45 at four.
+//
+// Raising the revisit clock with it was tried and reverted the same day: tests/engine_sim.cpp's
+// phase test, where a boost stops paying and later starts paying again, recovered to effort 0.40
+// against 0.79 before. Nothing else can notice that recovery -- the engine is not boosting, so
+// it never observes the edge that improved -- which is precisely the deadlock the short clock
+// exists to break. So it keeps its own constant, unchanged.
+constexpr double EvidenceHalfLife = 1024.;
+constexpr double RevisitHalfLife = 64.;
+static double decayed(const Experience& e, uint64_t samples, double halfLife) {
     const double age = samples > e.touched ? static_cast<double>(samples - e.touched) : 0;
-    return e.count * std::exp2(-age / 64.);
+    return e.count * std::exp2(-age / halfLife);
 }
+static double freshEvidence(const Experience& e, uint64_t samples) {
+    return decayed(e, samples, EvidenceHalfLife);
+}
+// How much this model knows about one edge, at the FINE resolution and deliberately not at the
+// coarse one -- even though predict() leans on the coarse parent through the backoff weight.
+//
+// This is the novelty budget in accept() and the curiosity bonus in search, and reading the
+// parent here was tried and reverted (2026-09-17). The argument for it was real: the fine key
+// adds a temperature octave and load octiles on top of the app, so every one of those buckets
+// carries its own untried budget for an edge the device measured a few degrees away, which is
+// far more exploration than the constants in accept() read as. The simulator answered that the
+// budget is load-bearing, and asymmetrically so -- releasing gets 8 tries where spending gets 3,
+// because releasing is the recoverable direction and is how the controller comes back DOWN.
+// Suppressing it per fine bucket cost the furnace device its thermal ceiling outright: effort
+// rose from 1.95 to 2.54, the peak went from 71.4 C to 92.2 C and 873 of 900 windows breached,
+// where the same run with this function unchanged breached none.
+//
+// So the per-bucket budget stays. A new thermal or load regime is entitled to re-ask what a
+// floor buys there, and paying a few windows for that is cheaper than being unable to release.
+//
+// It reads RevisitHalfLife, not the evidence half-life predict() uses: this is a clock for when
+// to look again, not a measure of what is known. See the two-half-life note above.
 unsigned Model::count(const ContextKey& key, Action from, Action to) const {
     auto it = cells.find(edge(key.fine, from, to));
-    return it == cells.end() ? 0 : static_cast<unsigned>(std::ceil(freshEvidence(it->second, samples)));
+    return it == cells.end() ? 0 : static_cast<unsigned>(std::ceil(decayed(it->second, samples, RevisitHalfLife)));
 }
 Observation Model::predict(const ContextKey& key, const Observation& s, Action from,
                            Action to, std::mt19937* random) const {
@@ -545,11 +591,37 @@ bool Model::observe(const ContextKey& key, const Observation& before, Action fro
     ++samples;
     for (const auto& scope : {key.fine, key.coarse}) {
         const auto id = edge(scope, from, to);
+        // A fine cell is a REFINEMENT of its coarse parent, so it may not be opened before the
+        // parent has something to refine. Without this the first observation of any edge spent
+        // two table slots to store one measurement twice, split across two keys neither of which
+        // could ever reach the trust weight in predict(). Measured on the week-old brain: 3072
+        // cells at the cap, 65% of them holding exactly one observation, 1792 of them fine --
+        // and 74% of those fine cells belonged to a coarse parent that had fewer than four
+        // observations of its own. Promotion alone frees 43% of the table, which is the
+        // difference between a model that accumulates and one that evicts what it just learned.
+        //
+        // The test is `!cells.count(id)`: an already-promoted cell keeps being updated even if a
+        // surprise later knocks its parent's count back down. Demoting mid-life would throw away
+        // measured means to satisfy a bookkeeping rule.
+        if (scope == key.fine && scope != key.coarse && !cells.count(id)) {
+            const auto parent = cells.find(edge(key.coarse, from, to));
+            if (parent == cells.end() || parent->second.count < FinePromotion) continue;
+        }
         if (!cells.count(id) && cells.size() >= MaxEntries) {
-            auto oldest = std::min_element(cells.begin(), cells.end(), [](const auto& a, const auto& b) {
-                return a.second.touched < b.second.touched;
-            });
-            cells.erase(oldest);
+            // Evict the least EVIDENCE, not the least recently touched. Recency alone discards
+            // the one cell on the device with 56 measurements of YouTube at 60 because it was
+            // last seen this morning, while keeping two thousand cells that hold a single
+            // observation each and happen to be newer. Same decay the rest of the model reads,
+            // so a cell is worth exactly what predict() would weight it at; `touched` only
+            // breaks ties between cells that are equally worthless.
+            auto weakest = std::min_element(cells.begin(), cells.end(),
+                [this](const auto& a, const auto& b) {
+                    const double ea = freshEvidence(a.second, samples);
+                    const double eb = freshEvidence(b.second, samples);
+                    if (ea != eb) return ea < eb;
+                    return a.second.touched < b.second.touched;
+                });
+            cells.erase(weakest);
         }
         auto& e = cells[id];
         e.count = std::min(128U, e.count + 1);

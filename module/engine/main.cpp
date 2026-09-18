@@ -103,7 +103,12 @@ static constexpr char HistoryHeader[] =
     // How much of this window's span the device spent suspended. Zero in almost every row, and
     // the one number that explains a budget that jumped without any window having earned it --
     // which is the reading that separates a cooled device from a controller that lost its clock.
-    "suspended_s";
+    "suspended_s,"
+    // How long this window actually ran. Not a constant since the window closes on frame
+    // evidence rather than on the clock, and without it in the file a p95 measured over four and
+    // a half seconds cannot be told from one measured over twelve -- which is precisely the
+    // distinction the close rule exists to make. Same argument as `cadence` next to `jank`.
+    "span_s";
 // Rotate on size *or* on a schema change. Appending new columns to a file written by an older
 // layout leaves the diagnostics export silently misaligned, which is worse than losing history.
 // Rotations keep three generations instead of overwriting a single `.1`, so a long session
@@ -133,66 +138,13 @@ static void exportRow(const std::string& path, double at, Tier tier, uint64_t ap
     for (auto x : after) out << ',' << x;
     out << '\n';
 }
-// The context identity must track the tuning surface the engine competes with, not every switch
-// the app happens to own. Hashing the whole file gave observe and active different identities, so
-// alternating the two -- the only way to compare them in a game where pointing the camera at the
-// sky changes the frame rate -- would have started a fresh context every switch and learned
-// nothing. The same mistake, larger: 52 keys reached this hash, so changing the zram algorithm,
-// the dexopt mode or the hand-written game list orphaned every residual cell and every policy
-// the device had measured. Worse, `profile` was one of them, which split the transition model by
-// preference on top of the tier already doing it -- measured here as 552 of 730 cells that
-// differed by nothing else.
-//
-// What belongs here is what changes how the device answers the engine's own writes: the DVFS
-// surface, the limits it must respect, and who else owns a lever. Everything else -- renderer,
-// ART, zram, protection lists, dexopt -- changes the workload, and the workload is already
-// measured, window by window, in the feature vector. It is state, not identity.
-static const char* const IdentityKeys[] = {
-    "adaptive_target_fps", "adaptive_thermal_limit", "thermal", "fasrs_companion", "gos",
-    "cpu_gov", "io_sched", "gpu_gov", "gpu_min", "gpu_max", "gpu_hs_load", "gpu_hs_clock",
-    "gpu_hs_delay", "gpu_power_policy", "gpu_cl_boost", "gpu_dvfs_period", "gpu_polling_speed",
-    "gpu_js_period", "mif_min", "int_min", "disp_min", "ufs_rpm_lvl", "f2fs_ipu", "fps_unlock",
-    "samsung_perf", "samsung_spcm", "samsung_mars_off",
-};
-static std::string configIdentity(const std::map<std::string, std::string>& cfg) {
-    std::ostringstream out;
-    // `adaptive_pelt` is deliberately absent: which axes are permitted already reaches the
-    // context as the allowed-axis mask, and hashing it here would say the same thing twice while
-    // orphaning everything each time it is toggled.
-    for (const char* key : IdentityKeys) {
-        const auto found = cfg.find(key);
-        out << key << '=' << (found == cfg.end() ? std::string() : found->second) << '\n';
-    }
-    return std::to_string(hash(out.str()));
-}
-// Identities this exact configuration would have produced under the previous rule. `profile` was
-// inside that hash, so the same static surface yielded a different identity per profile; every
-// one of those is provably the same surface as the current one and is rehomed onto it. An
-// identity that matches none of them came from a configuration that cannot be reconstructed, and
-// its cells are dropped instead of being folded in under a label they did not earn.
-static std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::string> cfg,
-                                                           const std::string& current) {
-    std::map<std::string, std::string> rehome;
-    for (const char* profile : {"game", "balanced", "powersave", "none"}) {
-        auto probe = cfg;
-        probe["profile"] = profile;
-        std::ostringstream out;
-        for (const auto& [key, setting] : probe) {
-            if (key == "adaptive_mode" || key == "adaptive_learning") continue;
-            if (key == "adaptive_pelt" && (setting.empty() || setting == "1")) continue;
-            out << key << '=' << setting << '\n';
-        }
-        rehome[std::to_string(hash(out.str()))] = current;
-    }
-    return rehome;
-}
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "--probe";
     std::string dir = argc > 2 ? argv[2] : "/data/adb/m54tuner";
     if (mode == "--probe") {
         Sampler sampler; sampler.read(120, false); pauseFor(1);
-        auto s = sampler.read(120, true); bool fas;
-        std::cout << describe(s) << "conflict=" << processConflict(fas) << "\nfas=" << fas << '\n'; return 0;
+        auto s = sampler.read(120, true);
+        std::cout << describe(s) << "conflict=" << processConflict() << '\n'; return 0;
     }
     if (getuid() != 0 || (mode != "--run" && mode != "--restore")) return 2;
     umask(0077); mkdir(dir.c_str(), 0700);
@@ -291,7 +243,11 @@ int main(int argc, char** argv) {
         auto control = value(cfg, "adaptive_mode", "active");
         if (!moduleRoot.empty() && (access((moduleRoot + "/disable").c_str(), F_OK) == 0 || access((moduleRoot + "/remove").c_str(), F_OK) == 0)) break;
         if (control == "off") { reason = "disabled"; break; }
-        bool endWindow = tick - windowAt >= 6;
+        // Evidence, not the clock: see WindowFloor..WindowCeiling in platform.hpp for the
+        // measured cliff this is built around. `pendingFrames()` is read before this poll's
+        // read() runs, so it undercounts by at most one second of frames -- a window closed on
+        // it holds at least WindowFrames, never fewer.
+        bool endWindow = windowComplete(tick - windowAt, sampler.pendingFrames());
         // A user ceiling, not an assumption: the engine measures what the app actually renders
         // at and only refuses to chase anything above this.
         int cap = static_cast<int>(std::clamp(number(value(cfg, "adaptive_target_fps", "120"), 120), 24., 144.));
@@ -308,15 +264,16 @@ int main(int argc, char** argv) {
         // at 75 C and hands back less than half the headroom the sleep actually earned.
         const double exitTemp = s.temp;
         if (s.thermalValid) { s.temp = std::max(s.temp, tempPeak); s.batteryTemp = std::max(s.batteryTemp, batteryPeak); }
+        const double span = tick - windowAt;
         cpuSum = gpuSum = energySum = 0; readings = 0; tempPeak = batteryPeak = 0; windowAt = tick;
         Constraints baseLimits;
         baseLimits.tier = RuntimeObjective;
         baseLimits.high = std::clamp(number(value(cfg, "adaptive_thermal_limit", "82"), 82), 60., 84.);
-        bool fas = false; auto conflict = processConflict(fas);
+        auto conflict = processConflict();
         // Re-checked every window rather than once at start: a lock can appear while running,
         // and a capability that disappears silently is exactly what went unnoticed for days.
         const auto locked = lockedTuningNodes();
-        baseLimits = actuator.constrain(baseLimits, cfg, fas);
+        baseLimits = actuator.constrain(baseLimits, cfg);
         // The identity mask is the stable capability, never the transient backoff: feeding a
         // two-minute QoS hold into `context()` forked one device's physics across masks.
         decayRefusals(refusalState, tick);
@@ -340,7 +297,7 @@ int main(int argc, char** argv) {
         baseLimits.ceiling = limits.ceiling;
         auto configId = configIdentity(cfg);
         auto key = stableKey(s, baseLimits, configId);
-        auto nextSession = s.app + ':' + profile + ':' + configId + ':' + std::to_string(fas) + ':' + conflict;
+        auto nextSession = s.app + ':' + profile + ':' + configId + ':' + conflict;
         bool transition = nextSession != session;
         bool bench = benchmark(dir);
         // Measure a previous trim at the next window, after asynchronous process teardown.
@@ -575,11 +532,14 @@ int main(int argc, char** argv) {
                << "\nqueue_ms=" << s.queueMs << "\nqueue_peak_ms=" << s.queuePeakMs
                << "\nqueue_late=" << s.queueLate << "\nqueue_valid=" << s.queueValid
                << "\nprobe=" << sampler.probeReason() << "\nlocked_nodes=" << locked.size()
-               << "\nowner=" << (fas ? "fas-rs+M54" : "M54") << "\ncapabilities=" << actuator.capabilities()
+               << "\nowner=M54\ncapabilities=" << actuator.capabilities()
                << "\nmem_avail_mb=" << (s.memAvailKb > 0 ? s.memAvailKb / 1024 : -1)
+               << "\nswap_total_mb=" << (s.swapTotalKb > 0 ? s.swapTotalKb / 1024 : -1)
+               << "\nswap_free_mb=" << (s.swapFreeKb >= 0 && s.swapTotalKb > 0 ? s.swapFreeKb / 1024 : -1)
                << "\nram_trims=" << totalRamTrims
                << "\nlast_trim_freed_mb=" << (trim.measured ? std::to_string(trim.freedKb / 1024) : "unmeasured")
                << "\nsuspended_s=" << slept
+               << "\nspan_s=" << span
                // Boot time, the same clock `adaptive_history.csv` stamps its `at` column with.
                // Every reader outside this process joins the two -- thermal_report against the
                // watch log, ab_report against its blocks, measure_ablation against /proc/uptime
@@ -609,7 +569,7 @@ int main(int argc, char** argv) {
                 << ',' << want.toll << ',' << want.tried << ',' << (want.accepted ? 1 : 0)
                 << ',' << (limits.allowed[0] * 1 + limits.allowed[1] * 2 +
                            limits.allowed[2] * 4 + limits.allowed[3] * 8)
-                << ',' << slept << '\n';
+                << ',' << slept << ',' << span << '\n';
         pauseFor(std::max(.05, 1. - (monotonic() - tick)));
     }
     if (brain.model.samples > 0 || brain.windows > 0) atomicText(dir + "/adaptive_model", brain.serialize(identity));
