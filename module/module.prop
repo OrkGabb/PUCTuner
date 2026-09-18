@@ -1,7 +1,6 @@
 id=m54tuner
 name=PUCTuner (M54 / Exynos 1380)
-version=v0.10.0
-versionCode=12
+version=v0.11.0
+versionCode=13
 author=orkgabb
-description=Autonomous MCTS-PUCT closed-loop hardware tuner with eBPF runqueue telemetry and continuous RL learning on real measurements. Reversible and KernelSU/Magisk native.
-
+description=Closed-loop DVFS for this specific unit. A PUCT planner searches a value model trained on its own measured windows - frame pacing, eBPF runqueue delay, PSI, paging, watts, die heat - then raises CPU/GPU/bus floors only where it measured a gain, and refuses where it did not. Every write journaled and reversible.
