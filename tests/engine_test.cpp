@@ -1412,6 +1412,25 @@ int main() {
         // Nothing stored is a first boot, not a rejection.
         assert(loadBrain(store, "new-firmware", rehome, booted).empty());
 
+        // Adopting the set-aside brain on request: it loads under the new identity and answers
+        // with what it learned, and the brain it replaces is set aside rather than overwritten.
+        assert(atomicText(store + "/adaptive_model", booted.serialize("new-firmware")));
+        const auto currentBefore = readText(store + "/adaptive_model", 4 * 1024 * 1024);
+        const auto oldName = verdict.substr(verdict.find(':') + 1);
+        assert(adoptBrain(store, "new-firmware", rehome, "../adaptive_model") == "name");
+        assert(adoptBrain(store, "new-firmware", rehome, "adaptive_model") == "name");
+        // A set-aside file that fails its own checksum is refused, and the current brain stays.
+        assert(adoptBrain(store, "new-firmware", rehome, second.substr(second.find(':') + 1)) == "invalid");
+        assert(readText(store + "/adaptive_model", 4 * 1024 * 1024) == currentBefore);
+        assert(adoptBrain(store, "new-firmware", rehome, oldName).empty());
+        Brain adopted;
+        assert(loadBrain(store, "new-firmware", rehome, adopted).empty());
+        assert(std::abs(adopted.model.predict(after, seen, {}, up).p95 - learned) < 1);
+        assert(adopted.windows == folded.windows && adopted.model.samples == folded.model.samples);
+        bool replacedKept = false;
+        for (const auto& path : globPaths(store + "/adaptive_model.replaced.*"))
+            replacedKept = replacedKept || readText(path, 4 * 1024 * 1024) == currentBefore;
+        assert(replacedKept);
     }
     {
         // Generations shift instead of overwriting a single `.1`.

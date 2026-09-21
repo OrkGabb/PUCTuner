@@ -469,6 +469,14 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
                     else "Guardada à parte · arquivo ilegível",
                     GameAccent,
                 )
+                // Only a brain from another firmware is offered back: an unreadable one would be
+                // refused by its own checksum anyway, and saying so up front is more honest.
+                val name = rejected.substringAfter(':')
+                if (rejected.startsWith("identity:") && name.startsWith("adaptive_model.rejected.")) {
+                    TextButton(onClick = { vm.askAdoptBrain(name) }) {
+                        Text(localize("Reutilizar a memória anterior", LocalAppLanguage.current))
+                    }
+                }
             }
             InfoRow("Amostras reais aceitas", ai["samples"] ?: "0")
             // Share of the realised return the critic's predictions explain over the last ~20 min
@@ -1351,6 +1359,11 @@ private fun Dialogs(state: MainUiState, vm: MainViewModel) {
             "Reverter",
         )
         Dialog.LEARNING_CONTEXT -> Triple("Alterar contexto de aprendizado?", CONTEXT_NOTICE, "Aplicar alteração")
+        Dialog.ADOPT_BRAIN -> Triple(
+            "Reutilizar a memória anterior?",
+            "Uma atualização de sistema mudou o firmware, e o motor guardou à parte o que tinha aprendido. Uma atualização pode mudar o efeito de cada nível de CPU e GPU, por isso ele recomeça sozinho. Reutilizar devolve o aprendizado anterior; o motor corrige o que tiver mudado conforme medir. O que foi aprendido desde a atualização fica guardado à parte, não é apagado.",
+            "Reutilizar",
+        )
         Dialog.NONE -> Triple("", "", "")
     }
     AlertDialog(

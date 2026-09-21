@@ -107,6 +107,15 @@ object ModuleBridge {
 
     // ---------------- tiers ----------------
 
+    /**
+     * Takes a brain the engine set aside after a firmware update back into use. The name is
+     * checked here and again by the script and the engine; the brain in use is set aside too.
+     */
+    suspend fun adoptBrain(name: String): ApplyReport? {
+        if (!Regex("adaptive_model\\.rejected\\.[0-9.]+").matches(name)) return null
+        return runTier("adopt_brain.sh", name)
+    }
+
     /** Live tier: CPU/GPU/MIF/IO/PELT/thermal/VM/GOS. Effective immediately, restarts nothing. */
     suspend fun applyLive(): ApplyReport? = runTier("apply_profile.sh")
 

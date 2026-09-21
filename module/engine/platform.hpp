@@ -36,6 +36,16 @@ std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::s
 // one that cannot be read. The daemon exports it so a reset is visible instead of silent.
 std::string loadBrain(const std::string& dir, const std::string& identity,
                       const std::map<std::string, std::string>& rehome, Brain& brain);
+// `<prefix><time>`, with a `.<n>` suffix when that name is already taken in `dir`.
+std::string unusedName(const std::string& dir, const std::string& prefix);
+// Takes a brain loadBrain set aside back as `dir/adaptive_model`, under `identity`. Only ever on
+// the user's request: the firmware gate exists because an OTA can change what a level does on
+// this silicon, and it is the user who decides that a brain from before the update is still
+// worth more than starting over. The current brain, if any, is set aside as
+// `adaptive_model.replaced.<time>`. Returns empty on success, else what stopped it: `name`,
+// `unreadable`, `invalid` (fails its own checksum or bounds), `unmoved`, `save` or `verify`.
+std::string adoptBrain(const std::string& dir, const std::string& identity,
+                       const std::map<std::string, std::string>& rehome, const std::string& name);
 std::string processConflict();
 // Tuning nodes that exist but are not writable. A node another module left at mode 0444 is a
 // different failure from a node this kernel does not have, and reporting both as "absent"

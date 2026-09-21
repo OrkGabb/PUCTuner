@@ -140,6 +140,11 @@ static void exportRow(const std::string& path, double at, Tier tier, uint64_t ap
     for (auto x : after) out << ',' << x;
     out << '\n';
 }
+// What a brain is valid for: this firmware on this kernel. Every OTA moves it.
+static std::string engineIdentity() {
+    utsname kernel{}; uname(&kernel);
+    return std::to_string(hash(command({"getprop", "ro.build.fingerprint"}) + kernel.release + "m54-engine-3"));
+}
 int main(int argc, char** argv) {
     std::string mode = argc > 1 ? argv[1] : "--probe";
     std::string dir = argc > 2 ? argv[2] : "/data/adb/m54tuner";
@@ -148,10 +153,21 @@ int main(int argc, char** argv) {
         auto s = sampler.read(120, true);
         std::cout << describe(s) << "conflict=" << processConflict() << '\n'; return 0;
     }
-    if (getuid() != 0 || (mode != "--run" && mode != "--restore")) return 2;
+    if (getuid() != 0 || (mode != "--run" && mode != "--restore" && mode != "--adopt")) return 2;
     umask(0077); mkdir(dir.c_str(), 0700);
     int singleton = open((dir + "/adaptive.lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW, 0600);
     if (singleton < 0 || flock(singleton, LOCK_EX | LOCK_NB) != 0) return 3;
+    if (mode == "--adopt") {
+        // Holding the singleton lock is what makes this safe: no daemon can save over the file
+        // being replaced. Prints nothing on success, the reason on failure.
+        const auto boot = readConfig(dir + "/config");
+        const auto failed = adoptBrain(dir, engineIdentity(),
+                                       legacyIdentities(boot, configIdentity(boot)),
+                                       argc > 3 ? argv[3] : "");
+        if (failed.empty()) return 0;
+        std::cout << failed << '\n';
+        return 6;
+    }
     Actuator actuator(dir);
     {
         ApplyLock lock(dir);
@@ -161,8 +177,7 @@ int main(int argc, char** argv) {
     signal(SIGTERM, stop); signal(SIGINT, stop); signal(SIGHUP, stop);
     setpriority(PRIO_PROCESS, 0, 10);
     if (!atomicText(dir + "/adaptive_pid", pidRecord())) return 5;
-    utsname kernel{}; uname(&kernel);
-    std::string identity = std::to_string(hash(command({"getprop", "ro.build.fingerprint"}) + kernel.release + "m54-engine-3"));
+    const std::string identity = engineIdentity();
     Brain brain;
     // A brain that does not load is set aside, never overwritten. The first periodic save used to
     // replace it with the empty brain this run starts from, so one loader bug (or a firmware

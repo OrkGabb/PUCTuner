@@ -34,7 +34,7 @@ enum class RootState { CHECKING, GRANTED, UNAVAILABLE }
 /** Modal that needs an explicit answer before the change is worth making. */
 enum class Dialog {
     NONE, AGGRESSIVE, RE_BACKEND, SF_RESTART, SOFT_REBOOT, ZRAM, DEXOPT, DEXOPT_RESET,
-    LEARNING_CONTEXT,
+    LEARNING_CONTEXT, ADOPT_BRAIN,
 }
 
 enum class Picker { NONE, GAMES, RENDER_APPS, PROTECT_APPS }
@@ -55,6 +55,7 @@ data class MainUiState(
     val log: List<String>? = null,
     /** Choice waiting behind a confirmation dialog (applied only if the user says yes). */
     val pendingZram: String? = null,
+    val pendingAdopt: String? = null,
     val pendingReBackend: String? = null,
     val pendingContextLabel: String? = null,
     val language: AppLanguage = AppLanguage.PT_BR,
@@ -431,6 +432,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun askSfRestart() = update { it.copy(dialog = Dialog.SF_RESTART) }
 
+    // ---------------- set-aside brain ----------------
+
+    fun askAdoptBrain(name: String) = update { it.copy(dialog = Dialog.ADOPT_BRAIN, pendingAdopt = name) }
+
+    private fun confirmAdoptBrain() {
+        val name = _uiState.value.pendingAdopt ?: return
+        update { it.copy(dialog = Dialog.NONE, pendingAdopt = null, busy = it.busy + Tier.LIVE) }
+        viewModelScope.launch {
+            applyLock.withLock {
+                val r = ModuleBridge.adoptBrain(name)
+                finish(r, "Memória anterior reutilizada", Tier.LIVE)
+            }
+        }
+    }
+
     // ---------------- memory / dexopt tiers ----------------
 
     fun setZramAlgo(algo: String) {
@@ -599,6 +615,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 setReBackend(v)
             }
             Dialog.SF_RESTART -> confirmSfRestart()
+            Dialog.ADOPT_BRAIN -> confirmAdoptBrain()
             Dialog.SOFT_REBOOT -> confirmSoftReboot()
             Dialog.ZRAM -> confirmZram()
             Dialog.DEXOPT -> runDexopt(false)
@@ -609,7 +626,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun dismissDialog() {
         pendingContextAction = null
-        update { it.copy(dialog = Dialog.NONE, pendingZram = null, pendingReBackend = null, pendingContextLabel = null) }
+        update { it.copy(dialog = Dialog.NONE, pendingZram = null, pendingReBackend = null, pendingContextLabel = null, pendingAdopt = null) }
     }
     private fun close() = update { it.copy(dialog = Dialog.NONE) }
 

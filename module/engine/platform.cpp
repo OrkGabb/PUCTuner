@@ -229,15 +229,44 @@ std::string loadBrain(const std::string& dir, const std::string& identity,
     std::istringstream header(stored);
     std::string version, id;
     const char* why = (header >> version >> id) && id != identity ? "identity" : "invalid";
-    // rename() replaces its target, so two rejections within one second would put the second
-    // file over the first -- which is the brain worth keeping. Never reuse a name.
-    const auto stamp = "adaptive_model.rejected." + std::to_string(static_cast<long long>(time(nullptr)));
+    const auto name = unusedName(dir, "adaptive_model.rejected.");
+    if (std::rename(path.c_str(), (dir + "/" + name).c_str()) != 0) return std::string(why) + ":unmoved";
+    return std::string(why) + ':' + name;
+}
+// rename() replaces its target, so two set-asides within one second would put the second file
+// over the first -- which is the brain worth keeping. Never reuse a name.
+std::string unusedName(const std::string& dir, const std::string& prefix) {
+    const auto stamp = prefix + std::to_string(static_cast<long long>(time(nullptr)));
     auto name = stamp;
     struct stat taken{};
     for (int n = 1; stat((dir + "/" + name).c_str(), &taken) == 0; ++n)
         name = stamp + '.' + std::to_string(n);
-    if (std::rename(path.c_str(), (dir + "/" + name).c_str()) != 0) return std::string(why) + ":unmoved";
-    return std::string(why) + ':' + name;
+    return name;
+}
+std::string adoptBrain(const std::string& dir, const std::string& identity,
+                       const std::map<std::string, std::string>& rehome, const std::string& name) {
+    const std::string prefix = "adaptive_model.rejected.";
+    if (name.rfind(prefix, 0) != 0 || name.find('/') != std::string::npos) return "name";
+    const auto stored = readText(dir + "/" + name, 4 * 1024 * 1024);
+    if (stored.empty()) return "unreadable";
+    // Read it under the identity it was saved with: the checksum and every bound still apply,
+    // only the firmware gate is lifted, and only because the user asked for it.
+    std::istringstream header(stored);
+    std::string version, id;
+    Brain adopted;
+    if (!(header >> version >> id) || !adopted.deserialize(stored, id, rehome)) return "invalid";
+    // Whatever was learned since the reset is set aside too, never overwritten.
+    const auto path = dir + "/adaptive_model";
+    struct stat present{};
+    if (stat(path.c_str(), &present) == 0 && present.st_size > 0 &&
+        std::rename(path.c_str(), (dir + "/" + unusedName(dir, "adaptive_model.replaced.")).c_str()) != 0)
+        return "unmoved";
+    if (!atomicText(path, adopted.serialize(identity))) return "save";
+    Brain check;
+    if (!check.deserialize(readText(path, 4 * 1024 * 1024), identity, rehome) ||
+        check.windows != adopted.windows || check.model.samples != adopted.model.samples)
+        return "verify";
+    return {};
 }
 std::string processConflict() {
     std::string conflict;
