@@ -1213,19 +1213,46 @@ int main() {
             {"samsung_mars_off", "0"}, {"adaptive_ram_management", "0"},
         };
         const std::string measured = "10124605214796042609";
+        const std::string measuredV011 = "16266526014276763705";
         const auto current = configIdentity(shipped);
         assert(current != measured); // the retirement really does move the hash
         const auto rehome = legacyIdentities(shipped, current);
         assert(rehome.count(measured) && rehome.at(measured) == current);
+        assert(rehome.count(measuredV011) && rehome.at(measuredV011) == current);
         // A configuration that never held the retired key rehomes too: the value is not recorded
         // anywhere, so every value it could have taken has to be offered.
         auto off = shipped;
         off["fasrs_companion"] = "off";
         assert(legacyIdentities(off, current).count(measured));
+        // An even older identity hashed the whole sorted config map. Its reconstruction depends
+        // on carrying every inert tombstone until this load runs; the retired-key insertion above
+        // only covers the later fixed-key layout. Prove FAS, FPS and game_ram_clear independently.
+        auto whole = shipped;
+        whole["fasrs_companion"] = "auto";
+        auto oldWholeIdentity = [](std::map<std::string, std::string> cfg) {
+            cfg["profile"] = "balanced";
+            std::ostringstream out;
+            for (const auto& [key, setting] : cfg) {
+                if (key == "adaptive_mode" || key == "adaptive_learning") continue;
+                if (key == "adaptive_pelt" && (setting.empty() || setting == "1")) continue;
+                out << key << '=' << setting << '\n';
+            }
+            return std::to_string(hash(out.str()));
+        };
+        const auto wholeId = oldWholeIdentity(whole);
+        assert(legacyIdentities(whole, current).count(wholeId));
+        auto withoutFas = whole; withoutFas.erase("fasrs_companion");
+        auto withoutFps = whole; withoutFps.erase("fps_unlock");
+        auto withoutRam = whole; withoutRam.erase("game_ram_clear");
+        assert(!legacyIdentities(withoutFas, current).count(wholeId));
+        assert(!legacyIdentities(withoutFps, current).count(wholeId));
+        assert(!legacyIdentities(withoutRam, current).count(wholeId));
         // And the current identity is stable across the keys that are NOT part of the surface.
         auto noise = shipped;
         noise["render_apps"] = "com.example.game";
         noise["games"] = "com.example.other";
+        assert(configIdentity(noise) == current);
+        noise["fps_unlock"] = "0";
         assert(configIdentity(noise) == current);
 
         // The map being right is not the same as the brain surviving, and that gap very nearly
@@ -1283,6 +1310,37 @@ int main() {
         assert(elsewhere.deserialize(far.serialize("device"), "device", rehome));
         assert(elsewhere.model.count(farKey, {}, up) > 0);
         assert(elsewhere.prior.contexts.count(farKey.policy));
+
+        // Two surfaces that differed ONLY by a retired key fold onto one, and must arrive as one.
+        // The device held exactly this on 2026-09-20: 2045 cells and 61 policies under the
+        // `fps_unlock=0` identity next to 1027 and 26 under `fps_unlock=1`. Retiring the key
+        // mapped both to the current identity, their policy keys collided, the loader rejected
+        // the whole file, and the empty brain it ran with was saved over ~40k windows.
+        const std::string measuredFps0 = "6824075053607816250";
+        assert(rehome.count(measuredFps0) && rehome.at(measuredFps0) == current);
+        Brain split;
+        auto one = context(seen, limits, measured), zero = context(seen, limits, measuredFps0);
+        for (int i = 0; i < 40; ++i) {
+            assert(split.model.observe(one, seen, {}, up, next));
+            assert(split.model.observe(zero, seen, {}, up, next));
+        }
+        split.prior.reinforce(one.policy, Tier::Balanced, 2, candidates({}, seen, limits), 1.);
+        split.prior.reinforce(zero.policy, Tier::Balanced, 2, candidates({}, seen, limits), 1.);
+        const auto side = split.model.count(one, {}, up);
+        Brain folded;
+        assert(folded.deserialize(split.serialize("device"), "device", rehome));
+        // Only the surviving evidence can answer this: the current context holds BOTH halves.
+        assert(folded.model.count(after, {}, up) > side);
+        // Both halves, exactly: the pool is the sum of what each surface had measured...
+        assert(folded.model.count(after, {}, up) == side + split.model.count(zero, {}, up));
+        // ...and it answers with it. An empty brain predicts the heuristic (~24 ms here); the
+        // folded one predicts the ~60 ms p95 both halves measured.
+        Brain empty;
+        const double fold95 = folded.model.predict(after, seen, {}, up).p95;
+        assert(std::abs(fold95 - learned) < 1);
+        assert(fold95 - empty.model.predict(after, seen, {}, up).p95 > 20);
+        assert(folded.prior.contexts.count(after.policy));
+        assert(folded.prior.contexts.size() < split.prior.contexts.size());
     }
     {
         // Generations shift instead of overwriting a single `.1`.

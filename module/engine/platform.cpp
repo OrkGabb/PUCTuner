@@ -8,6 +8,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <fstream>
+#include <functional>
 #include <glob.h>
 #include <poll.h>
 #include <sstream>
@@ -134,7 +135,7 @@ const char* const IdentityKeys[] = {
     "adaptive_target_fps", "adaptive_thermal_limit", "thermal", "gos",
     "cpu_gov", "io_sched", "gpu_gov", "gpu_min", "gpu_max", "gpu_hs_load", "gpu_hs_clock",
     "gpu_hs_delay", "gpu_power_policy", "gpu_cl_boost", "gpu_dvfs_period", "gpu_polling_speed",
-    "gpu_js_period", "mif_min", "int_min", "disp_min", "ufs_rpm_lvl", "f2fs_ipu", "fps_unlock",
+    "gpu_js_period", "mif_min", "int_min", "disp_min", "ufs_rpm_lvl", "f2fs_ipu",
     "samsung_perf", "samsung_spcm", "samsung_mars_off",
 };
 // Keys that were in the identity and are not any more, each with the position it occupied and
@@ -146,8 +147,11 @@ const char* const IdentityKeys[] = {
 // `fasrs_companion` retired in v0.11.0 with the companion mode itself: the engine no longer
 // yields axes to fas-rs, it stands down from it like any other foreign tuner, so the setting no
 // longer describes anything about the surface being tuned.
+// `fps_unlock` retired in v0.12.0 because its AOSP property trio did not establish a verified
+// 120-Hz path on this Samsung firmware and no longer has a runtime owner.
 const struct { size_t at; const char* key; const char* values[3]; } RetiredIdentityKeys[] = {
     {3, "fasrs_companion", {"auto", "off", ""}},
+    {22, "fps_unlock", {"1", "0", ""}},
 };
 std::string identityOf(const std::map<std::string, std::string>& cfg,
                               const std::vector<std::string>& keys) {
@@ -189,19 +193,29 @@ std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::s
     // ...and the identities this configuration produced while a now-retired key was still part
     // of the hash. The value the key actually held is not recorded anywhere, so every value it
     // could have taken is offered; they are all the same physical surface, which is the whole
-    // reason the key was retired. One retirement at a time: a second one would need the cross
-    // product, and a silent partial answer is worse than an assert the day that happens.
-    static_assert(sizeof(RetiredIdentityKeys) / sizeof(RetiredIdentityKeys[0]) == 1,
-                  "rehoming more than one retired key needs the cross product of their values");
-    for (const auto& retired : RetiredIdentityKeys) {
-        for (const char* value : retired.values) {
-            auto keys = identityKeys();
-            keys.insert(keys.begin() + static_cast<long>(retired.at), retired.key);
-            auto probe = cfg;
-            probe[retired.key] = value;
-            rehome[identityOf(probe, keys)] = current;
+    // reason the key was retired. Enumerate every historical subset and value cross-product:
+    // v0.11 had fps_unlock but not fasrs_companion, while older releases had both.
+    const size_t retiredCount = sizeof(RetiredIdentityKeys) / sizeof(RetiredIdentityKeys[0]);
+    std::function<void(size_t, size_t, std::vector<std::string>,
+                       std::map<std::string, std::string>, bool)> enumerate;
+    enumerate = [&](size_t index, size_t inserted, std::vector<std::string> keys,
+                    std::map<std::string, std::string> probe, bool any) {
+        if (index == retiredCount) {
+            if (any) rehome[identityOf(probe, keys)] = current;
+            return;
         }
-    }
+        enumerate(index + 1, inserted, keys, probe, any);
+        const auto& retired = RetiredIdentityKeys[index];
+        for (const char* value : retired.values) {
+            auto historicalKeys = keys;
+            const auto position = std::min(retired.at + inserted, historicalKeys.size());
+            historicalKeys.insert(historicalKeys.begin() + static_cast<long>(position), retired.key);
+            auto historical = probe;
+            historical[retired.key] = value;
+            enumerate(index + 1, inserted + 1, historicalKeys, historical, true);
+        }
+    };
+    enumerate(0, 0, identityKeys(), cfg, false);
     return rehome;
 }
 std::string processConflict() {

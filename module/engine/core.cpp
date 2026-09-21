@@ -982,8 +982,15 @@ bool Brain::deserialize(const std::string& data, const std::string& identity,
             // legitimately differs between objectives. Only the identity inside it is rehomed.
             if (legacy) { if (!rehomeKey(key, rehome, true, false)) continue; }
             else rehomeKey(key, rehome, true, false);
-            if (!restored.prior.contexts.emplace(key, cell).second ||
-                restored.prior.contexts.size() > Prior::MaxContexts) return false;
+            // Rehoming folds identities that differed only by a retired key onto one, so the
+            // same policy key can arrive twice. A serialized map never repeats a key on its own;
+            // a repeat IS a fold, and rejecting it threw away the whole brain -- on this device,
+            // every one of ~40k windows, when `fps_unlock` retired and its 0 and 1 surfaces met.
+            // Cells pool their evidence; a policy holds no count to weight by, so the one touched
+            // last wins: it is the preference the device was still refining.
+            const auto [seat, fresh] = restored.prior.contexts.emplace(key, cell);
+            if (!fresh && cell.touched > seat->second.touched) seat->second = cell;
+            if (restored.prior.contexts.size() > Prior::MaxContexts) return false;
         } else if (tag == "R") {
             int t = 0; Replay::Sample sample; double gain = 0;
             if (!(in >> t) || t < 0 || t > 2) return false;

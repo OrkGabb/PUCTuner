@@ -2,7 +2,9 @@
 #include <algorithm>
 #include <csignal>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -165,8 +167,17 @@ int main(int argc, char** argv) {
     {
         const auto boot = readConfig(dir + "/config");
         const auto current = configIdentity(boot);
-        brain.deserialize(readText(dir + "/adaptive_model", 4 * 1024 * 1024), identity,
-                          legacyIdentities(boot, current));
+        const auto stored = readText(dir + "/adaptive_model", 4 * 1024 * 1024);
+        // A brain that does not load is set aside, never overwritten. The first periodic save
+        // used to replace it with the empty brain this run starts from, so one loader bug (or a
+        // firmware update moving `identity`) erased every window the device had learned, with
+        // nothing left to recover from. The rejected file keeps its own name and timestamp.
+        if (!brain.deserialize(stored, identity, legacyIdentities(boot, current)) &&
+            !stored.empty()) {
+            const auto aside = dir + "/adaptive_model.rejected." +
+                std::to_string(static_cast<long long>(time(nullptr)));
+            std::rename((dir + "/adaptive_model").c_str(), aside.c_str());
+        }
     }
     Budget allowance;
     allowance.restore(brain.budget);
