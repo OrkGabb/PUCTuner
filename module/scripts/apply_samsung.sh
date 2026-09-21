@@ -34,7 +34,9 @@ save() {
   v=$(settings get "$1" "$2" 2>/dev/null)
   [ -n "$v" ] || return 1
   [ "$v" = "null" ] && v=__ABSENT__
-  { [ ! -f "$BAK" ] || cat "$BAK"; echo "$1|$2=$v"; } | atomic_write "$BAK" 0600
+  # printf, not echo: mksh's echo expands backslashes (`\c` even ends the line), so a factory
+  # value containing one would be recorded, and later restored, corrupted (tested on the device).
+  { [ ! -f "$BAK" ] || cat "$BAK"; printf '%s\n' "$1|$2=$v"; } | atomic_write "$BAK" 0600
 }
 
 restore_one() {
