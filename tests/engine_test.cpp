@@ -1341,6 +1341,29 @@ int main() {
         assert(fold95 - empty.model.predict(after, seen, {}, up).p95 > 20);
         assert(folded.prior.contexts.count(after.policy));
         assert(folded.prior.contexts.size() < split.prior.contexts.size());
+
+        // A brain saved under another firmware does not load, and must not be lost to the save
+        // that follows: it is set aside under its own name, the daemon says why, and loading the
+        // set-aside file under the identity it was saved with answers with what it learned.
+        const auto store = dir + "/brainstore";
+        assert(mkdir(store.c_str(), 0700) == 0);
+        assert(atomicText(store + "/adaptive_model", folded.serialize("old-firmware")));
+        Brain booted;
+        const auto verdict = loadBrain(store, "new-firmware", rehome, booted);
+        assert(verdict.rfind("identity:adaptive_model.rejected.", 0) == 0);
+        assert(booted.model.cells.empty());
+        const auto aside = store + "/" + verdict.substr(verdict.find(':') + 1);
+        // The daemon's first save lands where the old brain was.
+        assert(atomicText(store + "/adaptive_model", booted.serialize("new-firmware")));
+        // A second rejection in the same second must not overwrite the first set-aside brain.
+        file(store + "/adaptive_model", "M54_BRAIN_5 new-firmware 0 0 0 0\nX\nCHECK 1\n");
+        const auto second = loadBrain(store, "new-firmware", rehome, booted);
+        assert(second.rfind("invalid:adaptive_model.rejected.", 0) == 0 && second != verdict);
+        Brain recovered;
+        assert(recovered.deserialize(readText(aside, 4 * 1024 * 1024), "old-firmware", rehome));
+        assert(std::abs(recovered.model.predict(after, seen, {}, up).p95 - learned) < 1);
+        // Nothing stored is a first boot, not a rejection.
+        assert(loadBrain(store, "new-firmware", rehome, booted).empty());
     }
     {
         // Generations shift instead of overwriting a single `.1`.

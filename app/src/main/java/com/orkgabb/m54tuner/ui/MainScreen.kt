@@ -460,6 +460,16 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
             }
             InfoRow("Estado", reason)
             InfoRow("Janelas aprendidas", ai["windows"] ?: "0")
+            // A brain that did not load was set aside and the counts above restarted from zero.
+            // Without this row that reads exactly like a device that never learned anything.
+            ai["brain_rejected"]?.takeIf { it.isNotBlank() }?.let { rejected ->
+                InfoRow(
+                    "Memória anterior",
+                    if (rejected.startsWith("identity:")) "Guardada à parte · outro firmware"
+                    else "Guardada à parte · arquivo ilegível",
+                    GameAccent,
+                )
+            }
             InfoRow("Amostras reais aceitas", ai["samples"] ?: "0")
             val confidence = ai["confidence"]?.toDoubleOrNull() ?: 0.0
             InfoRow("Confiança do avaliador", "${(confidence * 100).toInt()}%")

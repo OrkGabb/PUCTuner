@@ -29,6 +29,13 @@ std::string command(const std::vector<std::string>& args, int timeoutMs = 1500, 
 std::string configIdentity(const std::map<std::string, std::string>& cfg);
 std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::string> cfg,
                                                     const std::string& current);
+// Loads `dir/adaptive_model` into `brain`. A brain that does not load is set aside as
+// `adaptive_model.rejected.<time>`, never left where the first save would overwrite it. Returns
+// empty when a brain loaded or none was stored; otherwise `<why>:<where it went>`, where `why` is
+// `identity` for a brain from another firmware or kernel (every OTA does this) and `invalid` for
+// one that cannot be read. The daemon exports it so a reset is visible instead of silent.
+std::string loadBrain(const std::string& dir, const std::string& identity,
+                      const std::map<std::string, std::string>& rehome, Brain& brain);
 std::string processConflict();
 // Tuning nodes that exist but are not writable. A node another module left at mode 0444 is a
 // different failure from a node this kernel does not have, and reporting both as "absent"

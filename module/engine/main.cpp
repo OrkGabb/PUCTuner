@@ -164,20 +164,14 @@ int main(int argc, char** argv) {
     utsname kernel{}; uname(&kernel);
     std::string identity = std::to_string(hash(command({"getprop", "ro.build.fingerprint"}) + kernel.release + "m54-engine-3"));
     Brain brain;
+    // A brain that does not load is set aside, never overwritten. The first periodic save used to
+    // replace it with the empty brain this run starts from, so one loader bug (or a firmware
+    // update moving `identity`) erased every window the device had learned, with nothing left to
+    // recover from. Exported as `brain_rejected` so the reset is visible, not silent.
+    std::string brainRejected;
     {
         const auto boot = readConfig(dir + "/config");
-        const auto current = configIdentity(boot);
-        const auto stored = readText(dir + "/adaptive_model", 4 * 1024 * 1024);
-        // A brain that does not load is set aside, never overwritten. The first periodic save
-        // used to replace it with the empty brain this run starts from, so one loader bug (or a
-        // firmware update moving `identity`) erased every window the device had learned, with
-        // nothing left to recover from. The rejected file keeps its own name and timestamp.
-        if (!brain.deserialize(stored, identity, legacyIdentities(boot, current)) &&
-            !stored.empty()) {
-            const auto aside = dir + "/adaptive_model.rejected." +
-                std::to_string(static_cast<long long>(time(nullptr)));
-            std::rename((dir + "/adaptive_model").c_str(), aside.c_str());
-        }
+        brainRejected = loadBrain(dir, identity, legacyIdentities(boot, configIdentity(boot)), brain);
     }
     Budget allowance;
     allowance.restore(brain.budget);
@@ -530,6 +524,7 @@ int main(int argc, char** argv) {
                << "\nrefusal_limit=" << MaxRefusals
                << "\naction=" << current.id() << "\nproposal=" << decision.action.id() << "\nmove=" << decision.move
                << "\nsamples=" << brain.model.samples << "\nwindows=" << brain.windows
+               << "\nbrain_rejected=" << brainRejected
                << "\ncredit=" << credit << "\nrejected=" << rejected
                << "\nmodel_surprises=" << brain.model.surprises
                << "\ncontexts=" << brain.model.cells.size() << "\npolicies=" << brain.prior.contexts.size()

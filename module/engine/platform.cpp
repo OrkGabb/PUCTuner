@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <csignal>
 #include <cstring>
+#include <ctime>
 #include <fcntl.h>
 #include <fstream>
 #include <functional>
@@ -217,6 +218,26 @@ std::map<std::string, std::string> legacyIdentities(std::map<std::string, std::s
     };
     enumerate(0, 0, identityKeys(), cfg, false);
     return rehome;
+}
+std::string loadBrain(const std::string& dir, const std::string& identity,
+                      const std::map<std::string, std::string>& rehome, Brain& brain) {
+    const auto path = dir + "/adaptive_model";
+    const auto stored = readText(path, 4 * 1024 * 1024);
+    if (stored.empty() || brain.deserialize(stored, identity, rehome)) return {};
+    // The header names the identity it was saved under. Telling "another firmware" from "broken"
+    // is the difference between an expected reset and a loader bug, and only the file knows.
+    std::istringstream header(stored);
+    std::string version, id;
+    const char* why = (header >> version >> id) && id != identity ? "identity" : "invalid";
+    // rename() replaces its target, so two rejections within one second would put the second
+    // file over the first -- which is the brain worth keeping. Never reuse a name.
+    const auto stamp = "adaptive_model.rejected." + std::to_string(static_cast<long long>(time(nullptr)));
+    auto name = stamp;
+    struct stat taken{};
+    for (int n = 1; stat((dir + "/" + name).c_str(), &taken) == 0; ++n)
+        name = stamp + '.' + std::to_string(n);
+    if (std::rename(path.c_str(), (dir + "/" + name).c_str()) != 0) return std::string(why) + ":unmoved";
+    return std::string(why) + ':' + name;
 }
 std::string processConflict() {
     std::string conflict;
