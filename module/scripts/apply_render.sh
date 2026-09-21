@@ -196,18 +196,38 @@ if [ "$SIG_SF" != "$OLD_SF" ] || [ "$SF_DRIFT" = 1 ]; then
   OLD_AT=$(uptime_s)                 # written now; any SF older than this has not seen it
 fi
 
+# runtime_settled <since> — 0 once system_server and SystemUI both started at or after <since>.
+runtime_settled() {
+  [ "$(proc_start_s "$(first_pid system_server)")" -ge "$1" ] 2>/dev/null &&
+    [ "$(proc_start_s "$(first_pid com.android.systemui)")" -ge "$1" ] 2>/dev/null
+}
+
 SF_START=$(proc_start_s "$(first_pid surfaceflinger)")
 SF_RESTARTED=0
 if [ "$DO_SF" = "1" ] && [ "$SF_START" -lt "$OLD_AT" ] 2>/dev/null; then
+  RESTART_AT=$(uptime_s)
   restart_sf
   SF_RESTARTED=1
   SF_START=$(proc_start_s "$(first_pid surfaceflinger)")
 fi
 
-# On this Samsung build, ctl.restart may first publish a new SurfaceFlinger PID and only then turn
-# into a broader Android-runtime restart. That delayed restart can reassert properties after an
-# immediate readback looked correct. Do not write a successful terminal record inside that race.
-[ "$SF_RESTARTED" = 1 ] && sleep 12
+# surfaceflinger.rc carries `onrestart restart --only-if-running zygote`, so every SF restart is a
+# full Android-runtime restart, and restart_sf returns on the new SF PID before it is over. Measured
+# on the device (3 runs, 2026-09-21): new SF and zygote at +1.2 s, system_server at +2.6 s, SystemUI
+# at +10.6 to +12.0 s. The drift readback below must not run inside that window, so wait until
+# system_server and SystemUI are both newer than the restart. 25 s is twice the slowest run.
+if [ "$SF_RESTARTED" = 1 ]; then
+  i=0
+  until runtime_settled "$RESTART_AT"; do
+    i=$((i + 1))
+    if [ "$i" -gt 25 ]; then
+      rep render.runtime_settle warn unsettled settled
+      log "runtime not settled 25 s after surfaceflinger restart"
+      break
+    fi
+    sleep 1
+  done
+fi
 
 POST_SF_DRIFT=0
 sf_drift && POST_SF_DRIFT=1
