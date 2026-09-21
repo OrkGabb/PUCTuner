@@ -83,7 +83,6 @@ data class TunerConfig(
     // values, and the factory state is skiagl + skiaglthreaded (dumpsys shows "RE GLES (Ganesh)").
     val hwuiRenderer: String = "skiagl",
     val reBackend: String = "skiaglthreaded",
-    val fpsUnlock: Boolean = false,
     val renderApps: List<String> = emptyList(),
     val restartSystemUi: Boolean = false,
     // ART/zygote tier — only live after a soft reboot (zygote restart)
@@ -108,19 +107,16 @@ data class TunerConfig(
      *  to [games] on the module side when empty, so an app that never uses this picker keeps the
      *  old behaviour. */
     val protectList: List<String> = emptyList(),
-    /** One-shot background/cached-app kill, fired only when apply_profile.sh
-     *  actually runs with profile=game (a real selection, never a timer). Off by default — it costs
-     *  cached apps a cold relaunch. */
-    val gameRamClear: Boolean = false,
     /** Optional foreground-game controller. Off until its dumpsys integration is validated live. */
     val loadingBoostSeconds: Int = 45,
     // dexopt tier
     val dexoptMode: String = "speed-profile",
     val benchMinSpreadPct: Int = 5,
     val games: List<String> = emptyList(),
-    /** Keys this app has no field for, carried through verbatim. The module seeds keys the UI does
-     *  not expose (`adaptive_ram_management`, `pelt`); rewriting the file from known fields alone
-     *  silently deleted them on the first save, which is how the automatic RAM trim went dark. */
+    /** Keys this app has no field for, carried through verbatim. This includes inert compatibility
+     *  tombstones such as `fasrs_companion`, `fps_unlock` and `game_ram_clear`: no runtime path consumes them,
+     *  but older whole-config identity hashes need the original key/value to rehome learned cells.
+     *  New configs do not seed them. */
     val extras: Map<String, String> = emptyMap(),
 ) {
     /** Mirrors the editable portion of engine IdentityKeys, plus the permitted-axis mask (PELT).
@@ -128,8 +124,7 @@ data class TunerConfig(
     fun sameLearningContext(other: TunerConfig): Boolean =
         adaptiveTargetFps == other.adaptiveTargetFps &&
             adaptiveThermalLimit == other.adaptiveThermalLimit && thermal == other.thermal &&
-            gos == other.gos &&
-            fpsUnlock == other.fpsUnlock && samsungPerf == other.samsungPerf &&
+            gos == other.gos && samsungPerf == other.samsungPerf &&
             samsungSpcm == other.samsungSpcm && samsungMarsOff == other.samsungMarsOff &&
             adaptivePelt == other.adaptivePelt
 
@@ -160,7 +155,6 @@ data class TunerConfig(
         appendLine("zram_algo=$zramAlgo")
         appendLine("hwui_renderer=$hwuiRenderer")
         appendLine("re_backend=$reBackend")
-        appendLine("fps_unlock=${if (fpsUnlock) "1" else "0"}")
         appendLine("render_apps=${renderApps.joinToString(",")}")
         appendLine("restart_systemui=${if (restartSystemUi) "1" else "0"}")
         appendLine("art_usap=$artUsap")
@@ -174,7 +168,6 @@ data class TunerConfig(
         appendLine("protect_adj=${protectAdj.coerceIn(-1000, 500)}")
         appendLine("protect_interval=${protectInterval.coerceIn(1, 60)}")
         appendLine("protect_list=${protectList.joinToString(",")}")
-        appendLine("game_ram_clear=${if (gameRamClear) "1" else "0"}")
         appendLine("loading_boost_seconds=${loadingBoostSeconds.coerceIn(10, 180)}")
         appendLine("dexopt_mode=$dexoptMode")
         appendLine("bench_min_spread_pct=${benchMinSpreadPct.coerceIn(1, 50)}")
@@ -199,7 +192,9 @@ data class TunerConfig(
                     val i = t.indexOf('=')
                     if (i <= 0) continue
                     val key = t.substring(0, i).trim()
-                    if (key !in KNOWN_KEYS && KEY.matches(key)) extras[key] = t.substring(i + 1).trim()
+                    if (key !in KNOWN_KEYS && KEY.matches(key)) {
+                        extras[key] = t.substring(i + 1).trim()
+                    }
                 }
                 cfg.copy(extras = extras)
             }
@@ -238,7 +233,6 @@ data class TunerConfig(
                 hwuiRenderer = s("hwui_renderer", "skiagl").let { if (it == "default") "skiagl" else it },
                 reBackend = s("re_backend", "skiaglthreaded")
                     .let { if (it == "default") "skiaglthreaded" else it },
-                fpsUnlock = m["fps_unlock"] == "1",
                 renderApps = csv("render_apps"),
                 restartSystemUi = m["restart_systemui"] == "1",
                 artUsap = s("art_usap", TriState.AUTO),
@@ -252,7 +246,6 @@ data class TunerConfig(
                 samsungSpcm = m["samsung_spcm"] == "1",
                 samsungMarsOff = m["samsung_mars_off"] == "1",
                 protectList = csv("protect_list"),
-                gameRamClear = m["game_ram_clear"] == "1",
                 loadingBoostSeconds = int("loading_boost_seconds", 45).coerceIn(10, 180),
                 dexoptMode = s("dexopt_mode", "speed-profile"),
                 benchMinSpreadPct = int("bench_min_spread_pct", 5).coerceIn(1, 50),

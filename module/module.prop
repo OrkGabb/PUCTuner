@@ -1,6 +1,6 @@
 id=m54tuner
 name=PUCTuner (M54 / Exynos 1380)
-version=v0.11.0
-versionCode=13
+version=v0.12.0
+versionCode=14
 author=orkgabb
 description=Closed-loop DVFS for this specific unit. A PUCT planner searches a value model trained on its own measured windows - frame pacing, eBPF runqueue delay, PSI, paging, watts, die heat - then raises CPU/GPU/bus floors only where it measured a gain, and refuses where it did not. Every write journaled and reversible.

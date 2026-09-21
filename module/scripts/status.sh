@@ -22,8 +22,65 @@ fi
 [ -f "$FACTORY" ] && echo "factory=1" || echo "factory=0"
 # Computed, never read from the flag files: those are a cache that only an apply refreshes, so a
 # SurfaceFlinger that restarted on its own left the banner up forever.
-pending_for "$M54_DIR/render_state" sf_at surfaceflinger && echo "pending_sf=1" || echo "pending_sf=0"
-pending_for "$M54_DIR/art_state" at zygote64 zygote && echo "pending_soft=1" || echo "pending_soft=0"
+# One SurfaceFlinger dump per status run: the app polls this every 3 s, and the dump is served by
+# SurfaceFlinger itself. Both the drift check and the `prop.re_live` line read this copy.
+RE_LIVE=$(dumpsys SurfaceFlinger 2>/dev/null | grep -m1 -oE 'RE (GLES|Vulkan)[^-]*' | tr -d '\n')
+render_drift() {
+  local re live
+  re=$(read_cfg re_backend skiaglthreaded); [ "$re" = default ] && re=skiaglthreaded
+  [ "$(getprop debug.renderengine.backend)" = "$re" ] || return 0
+  case "$RE_LIVE" in
+    *Vulkan*) live=skiavkthreaded ;;
+    *GLES*) live=skiaglthreaded ;;
+    *) return 0 ;;
+  esac
+  [ "$live" = "$re" ] || return 0
+  return 1
+}
+if pending_for "$M54_DIR/render_state" sf_at surfaceflinger || render_drift; then
+  echo "pending_sf=1"
+else
+  echo "pending_sf=0"
+fi
+art_drift() {
+  local state prop want
+  check_art_prop() {
+    prop="$1"; want="$2"
+    [ "$(getprop "$prop")" = "$want" ] || return 1
+  }
+  state=$(read_cfg art_usap auto)
+  if [ "$state" = on ]; then
+    check_art_prop dalvik.vm.usap_pool_enabled true || return 0
+    check_art_prop dalvik.vm.usap_pool_size_max 4 || return 0
+    check_art_prop dalvik.vm.usap_pool_size_min 2 || return 0
+    check_art_prop dalvik.vm.usap_refill_threshold 2 || return 0
+  elif [ "$state" = off ] && [ -f "$FPROPS" ]; then
+    for prop in dalvik.vm.usap_pool_enabled dalvik.vm.usap_pool_size_max \
+      dalvik.vm.usap_pool_size_min dalvik.vm.usap_refill_threshold; do
+      check_art_prop "$prop" "$(prop_orig "$prop")" || return 0
+    done
+  fi
+  state=$(read_cfg art_dex2oat_little auto)
+  if [ "$state" = on ]; then
+    check_art_prop dalvik.vm.dex2oat-threads 4 || return 0
+    check_art_prop dalvik.vm.dex2oat-cpu-set 0,1,2,3 || return 0
+  elif [ "$state" = off ] && [ -f "$FPROPS" ]; then
+    for prop in dalvik.vm.dex2oat-threads dalvik.vm.dex2oat-cpu-set; do
+      check_art_prop "$prop" "$(prop_orig "$prop")" || return 0
+    done
+  fi
+  state=$(read_cfg art_heap auto)
+  if [ "$state" = on ]; then check_art_prop dalvik.vm.heapgrowthlimit 288m || return 0
+  elif [ "$state" = off ] && [ -f "$FPROPS" ]; then
+    check_art_prop dalvik.vm.heapgrowthlimit "$(prop_orig dalvik.vm.heapgrowthlimit)" || return 0
+  fi
+  return 1
+}
+if pending_for "$M54_DIR/art_state" at zygote64 zygote || art_drift; then
+  echo "pending_soft=1"
+else
+  echo "pending_soft=0"
+fi
 
 # ---- CPU ----
 for p in /sys/devices/system/cpu/cpufreq/policy*; do
@@ -198,11 +255,9 @@ echo "thermal.mode=$tzmode"
 # ---- render props actually live right now ----
 echo "prop.hwui_renderer=$(getprop debug.hwui.renderer)"
 echo "prop.re_backend=$(getprop debug.renderengine.backend)"
-echo "prop.fps_override=$(getprop ro.surface_flinger.game_default_frame_rate_override)"
 # Which RenderEngine SurfaceFlinger actually built — the prop can be empty while the backend is
 # very much decided, so read the truth from the running service.
-echo "prop.re_live=$(dumpsys SurfaceFlinger 2>/dev/null | grep -m1 -oE 'RE (GLES|Vulkan)[^-]*' | tr -d '\n')"
-echo "prop.fps_feature_disabled=$(getprop debug.graphics.game_default_frame_rate.disabled)"
+echo "prop.re_live=$RE_LIVE"
 echo "prop.usap=$(getprop dalvik.vm.usap_pool_enabled)"
 echo "prop.dex2oat_cpuset=$(getprop dalvik.vm.dex2oat-cpu-set)"
 echo "prop.dex2oat_threads=$(getprop dalvik.vm.dex2oat-threads)"
@@ -217,3 +272,4 @@ if pm list packages --user 0 "$PKG" 2>/dev/null | grep -q "$PKG"; then
 else
   echo "gos=absent"
 fi
+echo "status.complete=1"

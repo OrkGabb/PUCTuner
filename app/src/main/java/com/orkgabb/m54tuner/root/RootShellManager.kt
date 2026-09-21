@@ -1,6 +1,7 @@
 package com.orkgabb.m54tuner.root
 
 import com.topjohnwu.superuser.Shell
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -30,24 +31,46 @@ object RootShellManager {
      * anything else goes wrong acquiring the shell.
      */
     suspend fun hasRoot(): Boolean = withContext(Dispatchers.IO) {
-        runCatching {
+        try {
             val shell = Shell.getShell()
             shell.isRoot
-        }.getOrDefault(false)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            false
+        }
     }
 
     /**
      * Runs a shell script (root context) and returns its combined stdout lines.
-     * Throws nothing: on failure the result list will simply reflect stderr (redirected to
-     * stdout) and callers should check [ShellRunResult.isSuccess].
+     * Throws nothing: LibSU can throw when the shell dies mid-call (denied grant, killed
+     * host), so anything it raises is folded into an unsuccessful result instead of
+     * propagating into — and permanently killing — the polling coroutine and friends.
+     * Callers must still check [ShellRunResult.isSuccess].
      */
     suspend fun run(script: String): ShellRunResult = withContext(Dispatchers.IO) {
-        val result = Shell.cmd(script).exec()
-        ShellRunResult(
-            isSuccess = result.isSuccess,
-            exitCode = result.code,
-            output = result.out,
-        )
+        runCatching {
+            // A subshell per call. LibSU writes the script into ONE persistent root shell and
+            // then `__RET=$?; echo <marker>`, so a top-level `exit` killed that shell before the
+            // marker: the output was lost and a module probe read "not installed". Inside `( )`
+            // an `exit N` ends only this call and becomes its exit code, and nothing a script
+            // sources (lib.sh's umask and variables) leaks into the next call.
+            val result = Shell.cmd("(\n$script\n)").exec()
+            ShellRunResult(
+                isSuccess = result.isSuccess,
+                exitCode = result.code,
+                output = result.out,
+            )
+        }.getOrElse {
+            // Cancellation must still cancel: folding it into a failure result would leave the
+            // polling coroutine unkillable on ViewModel teardown.
+            if (it is CancellationException) throw it
+            ShellRunResult(
+                isSuccess = false,
+                exitCode = -1,
+                output = listOf("shell exception: ${it.message}"),
+            )
+        }
     }
 }
 

@@ -1,32 +1,56 @@
 #!/system/bin/sh
-# Restores every persistent Android/Samsung setting owned by M54 Tuner. Safe to run repeatedly.
+# Restore every persistent Android/Samsung setting owned by M54 Tuner. Ownership ledgers are
+# retained until every mutation is verified so a failed uninstall remains recoverable.
 DIR=$(dirname "$0")
 . "$DIR/lib.sh"
 
 EXCL=content://com.samsung.android.sm.mars/MARs_ExcludeTarget
 POL=content://com.samsung.android.sm.mars/MARs_Policy
 SET=content://com.samsung.android.sm/settings
+fail=0
 
-sh "$DIR/keepalive_stop.sh" >/dev/null 2>&1
-sh "$DIR/bench_stop.sh" >/dev/null 2>&1
-[ -f "$M54_DIR/session_watch_pid" ] && sh "$DIR/session_watch_stop.sh" >/dev/null 2>&1
-[ -f "$M54_DIR/thermal_guard_pid" ] && sh "$DIR/thermal_guard_stop.sh" >/dev/null 2>&1
+stop_if_present() {
+  [ -f "$M54_DIR/$1" ] || return 0
+  sh "$DIR/$2" >/dev/null 2>&1 || { log "restore: failed to stop $2"; fail=1; }
+}
+stop_if_present keepalive_pid keepalive_stop.sh
+stop_if_present bench_pid bench_stop.sh
+[ -f "$M54_DIR/bench_sched_pid" ] && sh "$DIR/bench_stop.sh" sched >/dev/null 2>&1 || {
+  [ -f "$M54_DIR/bench_sched_pid" ] && fail=1
+}
+stop_if_present session_watch_pid session_watch_stop.sh
+stop_if_present thermal_guard_pid thermal_guard_stop.sh
 
+pkg_absent() {
+  local out rc
+  out=$(content query --uri "$EXCL" --where "packageName='$1'" 2>/dev/null); rc=$?
+  [ "$rc" = 0 ] || return 1
+  ! echo "$out" | grep -Fq "packageName=$1"
+}
 if [ -f "$M54_DIR/protect_owned" ]; then
   while IFS= read -r pkg; do
     valid_pkg "$pkg" || continue
-    content delete --uri "$EXCL" --where "packageName='$pkg'" >/dev/null 2>&1
+    if ! content delete --uri "$EXCL" --where "packageName='$pkg'" >/dev/null 2>&1 || ! pkg_absent "$pkg"; then
+      log "restore: MARs row still present or unreadable: $pkg"
+      fail=1
+    fi
   done < "$M54_DIR/protect_owned"
 fi
 
+spcm_now() { content query --uri "$SET" --where "key='spcm_switch'" 2>/dev/null | grep -o 'value=[01]' | head -1 | cut -d= -f2; }
+policy_now() { content query --uri "$POL" --where "policyNum=$1" 2>/dev/null | grep -o 'isPolicyEnabled=[01]' | head -1 | cut -d= -f2; }
 if [ -f "$M54_DIR/protect_backup" ]; then
   spcm=$(grep '^spcm=' "$M54_DIR/protect_backup" | tail -1 | cut -d= -f2-)
-  [ -n "$spcm" ] && [ "$spcm" != __ABSENT__ ] && \
-    content update --uri "$SET" --bind value:s:"$spcm" --where "key='spcm_switch'" >/dev/null 2>&1
+  if [ -n "$spcm" ] && [ "$spcm" != __ABSENT__ ]; then
+    content update --uri "$SET" --bind value:s:"$spcm" --where "key='spcm_switch'" >/dev/null 2>&1 || fail=1
+    [ "$(spcm_now)" = "$spcm" ] || fail=1
+  fi
   for p in 1 8; do
     v=$(grep "^policy$p=" "$M54_DIR/protect_backup" | tail -1 | cut -d= -f2-)
-    [ -n "$v" ] && [ "$v" != __ABSENT__ ] && \
-      content update --uri "$POL" --bind isPolicyEnabled:i:"$v" --where "policyNum=$p" >/dev/null 2>&1
+    if [ -n "$v" ] && [ "$v" != __ABSENT__ ]; then
+      content update --uri "$POL" --bind isPolicyEnabled:i:"$v" --where "policyNum=$p" >/dev/null 2>&1 || fail=1
+      [ "$(policy_now "$p")" = "$v" ] || fail=1
+    fi
   done
 fi
 
@@ -34,15 +58,32 @@ if [ -f "$M54_DIR/samsung_backup" ]; then
   while IFS= read -r line; do
     table=${line%%|*}; rest=${line#*|}; key=${rest%%=*}; value=${rest#*=}
     [ -n "$table" ] && [ -n "$key" ] || continue
-    if [ "$value" = __ABSENT__ ]; then settings delete "$table" "$key" >/dev/null 2>&1
-    else settings put "$table" "$key" "$value" >/dev/null 2>&1; fi
+    if [ "$value" = __ABSENT__ ]; then
+      settings delete "$table" "$key" >/dev/null 2>&1 || fail=1
+      [ "$(settings get "$table" "$key" 2>/dev/null)" = null ] || fail=1
+    else
+      settings put "$table" "$key" "$value" >/dev/null 2>&1 || fail=1
+      [ "$(settings get "$table" "$key" 2>/dev/null)" = "$value" ] || fail=1
+    fi
   done < "$M54_DIR/samsung_backup"
 fi
 
 if [ -f "$M54_DIR/gos_backup" ]; then
   gos=$(cat "$M54_DIR/gos_backup")
-  [ "$gos" = enabled ] && pm enable --user 0 com.samsung.android.game.gos >/dev/null 2>&1
-  [ "$gos" = disabled ] && pm disable-user --user 0 com.samsung.android.game.gos >/dev/null 2>&1
+  case "$gos" in
+    enabled)
+      pm enable --user 0 com.samsung.android.game.gos >/dev/null 2>&1 || fail=1
+      pm list packages -e --user 0 com.samsung.android.game.gos 2>/dev/null | grep -q com.samsung.android.game.gos || fail=1 ;;
+    disabled)
+      pm disable-user --user 0 com.samsung.android.game.gos >/dev/null 2>&1 || fail=1
+      pm list packages -d --user 0 com.samsung.android.game.gos 2>/dev/null | grep -q com.samsung.android.game.gos || fail=1 ;;
+    *) fail=1 ;;
+  esac
 fi
 
-log "persistent settings restored"
+if [ "$fail" = 0 ]; then
+  log "persistent settings restored and verified"
+  exit 0
+fi
+log "persistent restore INCOMPLETE; ownership ledgers retained"
+exit 1

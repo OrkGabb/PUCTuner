@@ -17,19 +17,19 @@ dev=/dev/block/zram0
 if [ -z "$algo" ] || [ ! -d "$sys" ]; then
   rep zram.algo skip - "$algo"
   result_end
-  exit 0
+  exit $?
 fi
 
 cur=$(cat "$sys/comp_algorithm" 2>/dev/null | tr ' ' '\n' | grep '^\[' | tr -d '[]')
 if ! cat "$sys/comp_algorithm" 2>/dev/null | tr -d '[]' | grep -qw "$algo"; then
   rep zram.algo fail unsupported "$algo"
   result_end
-  exit 0
+  exit $?
 fi
 if [ "$cur" = "$algo" ]; then
   rep zram.algo ok "$cur" "$algo"
   result_end
-  exit 0
+  exit $?
 fi
 
 # ---------------------------------------------------------------------------
@@ -75,7 +75,7 @@ if ! fits; then
     rep zram.algo fail "lowmem:$(mem_avail)<$(need_now)" "$algo"
     log "zram: giving up, still short after clearing (avail=$(mem_avail))"
     result_end
-    exit 0
+    exit $?
   fi
   log "zram: cleared, avail $before -> $(mem_avail)"
 fi
@@ -101,14 +101,14 @@ abort_rebuild() {
   else rep zram.rollback fail no-swap "$old_algo"; fi
   rep zram.algo fail "$stage" "$algo"
   result_end
-  exit 0
+  exit $?
 }
 
 swapoff "$dev" 2>/dev/null || {
   rep zram.algo fail swapoff "$algo"
   log "zram: swapoff failed"
   result_end
-  exit 0
+  exit $?
 }
 ( echo 1 > "$sys/reset" ) 2>/dev/null || abort_rebuild reset
 ( echo "$algo" > "$sys/comp_algorithm" ) 2>/dev/null || abort_rebuild algorithm
@@ -123,3 +123,4 @@ else
   abort_rebuild swapon
 fi
 result_end
+exit $?

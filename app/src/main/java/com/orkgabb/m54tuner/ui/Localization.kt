@@ -24,14 +24,12 @@ fun localize(text: String, language: AppLanguage): String {
 private val EN_REPLACEMENTS = listOf(
     // --- Dialogs, notices & confirmations (exact full sentences) ---
     "Desativa o throttling térmico de CPU e GPU. O aparelho esquentará mais sob carga alta." to "Disables thermal throttling for CPU and GPU. Device will run hotter under heavy load.",
-    "Reinicia o SurfaceFlinger (a tela piscará). Afeta jogos com suporte a 120 Hz." to "Restarts SurfaceFlinger (screen will blink). Affects games supporting 120 Hz.",
     "Alternar o backend exige reiniciar o SurfaceFlinger (a tela pisca). O backend Vulkan é experimental no driver Mali." to "Switching backend requires restarting SurfaceFlinger (screen blinks). Vulkan backend is experimental on Mali driver.",
     "A tela apagará por alguns segundos para reiniciar o compositor de tela." to "The screen will turn off for a few seconds to restart the display compositor.",
     "Reinicia a interface do sistema para aplicar propriedades de ART. O kernel e root continuam ativos." to "Restarts the system UI to apply ART properties. Kernel and root remain active.",
     "O swap será recriado mantendo os 4 GB de fábrica. Memória em cache será liberada se necessário." to "Swap will be recreated preserving stock 4 GB. Cached memory will be freed beforehand if needed.",
     "Compila os jogos selecionados com o perfil de compilação ART escolhido." to "Compiles selected games with chosen ART compilation profile.",
     "Restaura a compilação padrão (speed-profile) dos jogos selecionados." to "Restores default compilation (speed-profile) for selected games.",
-    "Fecha apps em segundo plano para liberar memória ao aplicar o perfil Game." to "Closes background apps to free memory when applying Game profile.",
     "Esta alteração muda o contexto do motor. O aprendizado anterior é preservado e reutilizado ao retornar à configuração." to "This change switches the engine context. Previous learning is preserved and reused when returning to this configuration.",
     "Compilar os jogos" to "Compile games",
     "Reverter a compilação" to "Reset compilation",
@@ -76,8 +74,6 @@ private val EN_REPLACEMENTS = listOf(
     "Instalações e atualizações de apps demoram mais." to "App installs and updates take longer.",
     "Aumenta o limite de heap para evitar coletas de lixo frequentes." to "Increases heap limit to avoid frequent garbage collection.",
     "Aumenta levemente o consumo de RAM de todos os apps." to "Slightly increases RAM usage for all apps.",
-    "Fecha apps em segundo plano ao ativar o Game, mantendo o cache em disco." to "Closes background apps when activating Game, keeping disk cache.",
-    "Apps fechados precisarão reiniciar do zero." to "Closed apps will need to restart from scratch.",
     "Adiciona os pacotes à tabela MARs_ExcludeTarget contra suspensão." to "Adds packages to MARs_ExcludeTarget table to prevent suspension.",
     "Desativa o gerenciador de processos em segundo plano da Samsung." to "Disables Samsung background process manager.",
     "Desativa as políticas 1 e 8 de encerramento do MARs." to "Disables MARs kill policies 1 and 8.",
@@ -94,9 +90,6 @@ private val EN_REPLACEMENTS = listOf(
     "Trocar o backend de composição exige reiniciar o SurfaceFlinger (tela pisca). O app grava a prop agora e pergunta antes de reiniciar. O caminho Vulkan é experimental neste driver Mali: em uso real deu piscadas pretas em transições, YouTube Shorts e multitarefa, e tela preta com crash no NTE." to "Changing the composition backend requires restarting SurfaceFlinger (screen blinks). The app writes the prop now and asks before restarting. The Vulkan path is experimental on this Mali driver: in real use it produced black flickers in transitions, YouTube Shorts and multitasking, and black screen with crash in NTE.",
     "O SurfaceFlinger do Android 16 recusa backend não-threaded, então só estes dois valem. De fábrica é o GLES (Ganesh) — e foi com o Vulkan ligado aqui que apareceram as piscadas pretas na composição." to "Android 16's SurfaceFlinger rejects non-threaded backends, so only these two are valid. Stock is GLES (Ganesh) — and with Vulkan enabled here, black composition flickers were observed.",
     "Continuar mesmo assim" to "Continue anyway",
-    "Destravar 120fps em jogos" to "Unlock 120fps in games",
-    "Destravar 120fps" to "Unlock 120fps",
-    "Precisa reiniciar o SurfaceFlinger para valer — a tela apaga e volta. Só afeta jogos que suportam 120 Hz." to "Requires restarting SurfaceFlinger to take effect — the screen goes black and returns. Only affects games that support 120 Hz.",
     "RenderEngine ativo agora" to "RenderEngine active now",
     "Reiniciar o SurfaceFlinger" to "Restart SurfaceFlinger",
     "A tela vai apagar e voltar em alguns segundos. Nada é perdido, mas apps em tela cheia podem ser redesenhados." to "The screen will turn off and return in a few seconds. Nothing is lost, but fullscreen apps may be redrawn.",
@@ -105,8 +98,6 @@ private val EN_REPLACEMENTS = listOf(
     "Reiniciar interface" to "Restart UI",
     "Trocar o algoritmo do zram" to "Change zram algorithm",
     "O swap será esvaziado e recriado (swapoff/mkswap/swapon), mantendo os 4 GB da Samsung. Se a RAM livre não cobrir o que está no swap, o módulo abre espaço antes: limpa o cache de páginas e encerra os apps em segundo plano (o M54 Tuner, em primeiro plano, não é afetado). Só desiste se nem assim couber." to "Swap will be emptied and recreated (swapoff/mkswap/swapon), keeping Samsung's 4 GB disksize. If free RAM cannot hold current swap contents, the module makes room first: drops page cache and terminates background apps (M54 Tuner in foreground is unaffected). It only gives up if it still does not fit.",
-    "Limpar RAM ao ativar o Game" to "Clear RAM when activating Game",
-    "Toda vez que o perfil Game for aplicado: encerra apenas os apps em cache ou segundo plano; o page cache do sistema é preservado. O M54 Tuner em primeiro plano e os serviços do sistema não são afetados. Apps encerrados reabrem do zero da próxima vez. Roda uma vez por ativação, nunca em loop." to "Whenever Game profile is applied: terminates only cached or background apps; system page cache is preserved. M54 Tuner in foreground and system services are unaffected. Closed apps start fresh next time. Runs once per activation, never in a loop.",
     "Térmico agressivo" to "Aggressive thermal",
     "Desliga o throttling das zonas de CPU e GPU. O aparelho vai esquentar mais e, a longo prazo, isso desgasta a bateria. A zona da bateria continua ativa. Aviso mostrado uma só vez." to "Disables throttling on CPU and GPU zones. The device will run hotter and, over the long term, this wears the battery. The battery zone remains active. Warning shown only once.",
     "Entendo, ativar" to "I understand, enable",
@@ -238,11 +229,6 @@ private val EN_REPLACEMENTS = listOf(
         "the black composition flashes appeared.",
     "A prop é global; a lista abaixo só define quem é fechado para reler agora." to
         "This property is global; the list only chooses which apps restart to reload it now.",
-    "Remove o teto de 60 do Game Booster no painel de 120 Hz." to
-        "Removes the Game Booster 60 FPS cap on the 120 Hz panel.",
-    "Precisa reiniciar o SurfaceFlinger para valer — a tela apaga e volta. Só afeta jogos " to
-        "Requires a SurfaceFlinger restart — the screen briefly turns off. Only affects games ",
-    "que suportam 120 Hz." to "that support 120 Hz.",
     "Trocar o algoritmo esvazia o swap. Faltando RAM, o módulo limpa cache e fecha apps " to
         "Changing the algorithm empties swap. If RAM is low, the module reclaims memory and closes ",
     "de segundo plano antes de tentar — nunca recusa sem tentar abrir espaço." to
@@ -429,7 +415,7 @@ private val EN_REPLACEMENTS = listOf(
     "Escopo de reinício" to "Restart scope",
     "HWUI (renderer)" to "HWUI (renderer)",
     "força parada dos apps escolhidos" to "force-stops selected apps",
-    "RenderEngine / 120fps" to "RenderEngine / 120 FPS",
+    "RenderEngine" to "RenderEngine",
     "reinicia o SurfaceFlinger (tela pisca)" to "restarts SurfaceFlinger (screen blinks)",
     "Perfil, GPU, I/O, térmico" to "Profile, GPU, I/O, thermal",
     "nada reinicia" to "no restart",
@@ -463,7 +449,6 @@ private val EN_REPLACEMENTS = listOf(
     "Sem GOS: prioridade para o jogo direto no kernel" to "Without GOS: game priority at kernel level",
     "Apps protegidos" to "Protected apps",
     "Nenhum — toque para escolher." to "None — tap to choose.",
-    "Limpar RAM ao ativar o Game" to "Clear RAM when Game starts",
     "Ativar Game automaticamente" to "Activate Game automatically",
     "Controle automático" to "Automatic controller",
     "Limpar agora" to "Clear now",

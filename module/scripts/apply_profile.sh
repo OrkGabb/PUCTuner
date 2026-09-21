@@ -629,11 +629,13 @@ apply_gos() {
   case "$GOS" in
     disabled|enabled)
       if [ ! -f "$bak" ]; then
-        if pm list packages -e --user 0 "$pkg" 2>/dev/null | grep -q "$pkg"; then echo enabled > "$bak"
-        else echo disabled > "$bak"; fi
+        if pm list packages -e --user 0 "$pkg" 2>/dev/null | grep -q "$pkg"; then st=enabled
+        elif pm list packages -d --user 0 "$pkg" 2>/dev/null | grep -q "$pkg"; then st=disabled
+        else rep gos fail backup unknown; return 1; fi
+        echo "$st" | atomic_write "$bak" 0600 || { rep gos fail backup write; return 1; }
       fi
-      [ "$GOS" = disabled ] && pm disable-user --user 0 "$pkg" >/dev/null 2>&1
-      [ "$GOS" = enabled ] && pm enable --user 0 "$pkg" >/dev/null 2>&1
+      if [ "$GOS" = disabled ]; then pm disable-user --user 0 "$pkg" >/dev/null 2>&1 || rep gos fail command disabled
+      else pm enable --user 0 "$pkg" >/dev/null 2>&1 || rep gos fail command enabled; fi
       ;;
     *) rep gos skip - untouched; return ;;
   esac
@@ -667,11 +669,13 @@ apply_bench_eas
 apply_cpuidle
 PROFILE="$REQUESTED_PROFILE"
 apply_vm
-# Opt-in, one-shot: the UI promises a clear when Game is applied, not on every live-tier edit.
-if [ "$PROFILE" = "game" ] && [ "$(read_cfg game_ram_clear 0)" = "1" ] && \
-   [ "${M54_SKIP_RAM_CLEAR:-}" != 1 ]; then
-  game_ram_clear
-fi
+# The profile-gated automatic RAM clear used to live here (profile=game + game_ram_clear=1).
+# It is retired, not relocated: static profiles are gone — PROFILE is always balanced while the
+# learner runs, so that condition could never hold and the toggle promised a clear that never
+# came. The two real mechanisms are the manual one-shot (clear_ram.sh, "Limpar agora") and the
+# engine's own opt-in trim (adaptive_ram_management, off by default, with cooldowns). Keeping a
+# dead branch that references a profile that cannot occur would be the placebo this file exists
+# to avoid. Existing game_ram_clear keys remain inert compatibility tombstones only.
 [ "${RESTORING_STOCK:-}" = 1 ] && rep profile ok stock none
 apply_thermal
 apply_gos
@@ -682,9 +686,14 @@ if [ "$THERMAL" = aggressive ] && [ "$(read_cfg thermal_guard 1)" = 1 ]; then
   if ! pid_record_alive "$M54_DIR/thermal_guard_pid" thermal_guard.sh; then
     rm -f "$M54_DIR/thermal_guard_pid"
     nohup sh "$DIR/thermal_guard.sh" </dev/null >/dev/null 2>&1 &
+    i=0
+    while [ "$i" -lt 20 ] && ! pid_record_alive "$M54_DIR/thermal_guard_pid" thermal_guard.sh; do
+      sleep 0.1; i=$((i + 1))
+    done
+    pid_record_alive "$M54_DIR/thermal_guard_pid" thermal_guard.sh || rep thermal.guard fail dead running
   fi
 else
-  sh "$DIR/thermal_guard_stop.sh" >/dev/null 2>&1
+  sh "$DIR/thermal_guard_stop.sh" >/dev/null 2>&1 || rep thermal.guard fail running stopped
 fi
 # The foreground-game watcher is gone: it rewrote the profile from a hand-written list of package
 # names, which is a declaration pretending to be an inference. A watcher already running from an
@@ -693,8 +702,10 @@ fi
 if [ "${M54_SESSION_CONTROLLER:-}" != 1 ] && [ -f "$M54_DIR/session_watch_pid" ]; then
   sh "$DIR/session_watch_stop.sh" >/dev/null 2>&1
 fi
-result_end
-log "apply done"
 end_apply_lock
 trap - EXIT INT TERM
-sh "$DIR/adaptive_start.sh"
+if ! sh "$DIR/adaptive_start.sh"; then rep adaptive.start fail dead running; fi
+result_end
+rc=$?
+log "apply done"
+exit "$rc"

@@ -17,12 +17,15 @@ import com.orkgabb.m54tuner.system.Tier
 import com.orkgabb.m54tuner.system.TriState
 import com.orkgabb.m54tuner.system.TunerConfig
 import com.orkgabb.m54tuner.ui.AppLanguage
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -30,8 +33,8 @@ enum class RootState { CHECKING, GRANTED, UNAVAILABLE }
 
 /** Modal that needs an explicit answer before the change is worth making. */
 enum class Dialog {
-    NONE, AGGRESSIVE, FPS, RE_BACKEND, SF_RESTART, SOFT_REBOOT, ZRAM, DEXOPT, DEXOPT_RESET,
-    GAME_RAM_CLEAR, LEARNING_CONTEXT,
+    NONE, AGGRESSIVE, RE_BACKEND, SF_RESTART, SOFT_REBOOT, ZRAM, DEXOPT, DEXOPT_RESET,
+    LEARNING_CONTEXT,
 }
 
 enum class Picker { NONE, GAMES, RENDER_APPS, PROTECT_APPS }
@@ -79,6 +82,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val applyLock = Mutex()
     private val pending = HashMap<Tier, Job>()
     private var pendingContextAction: (() -> Unit)? = null
+    private var persistedConfig = TunerConfig()
+    private var configLoaded = false
 
     /** Hold the operation itself: cancelling must neither save config nor run a module script. */
     private fun confirmContextChange(next: TunerConfig, label: String, action: () -> Unit): Boolean {
@@ -106,13 +111,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             // Fast path: skip the Samsung/MARs reads (9 subprocess spawns) so the screen is
             // interactive as soon as possible; they are fetched in the background below.
-            val device = ModuleBridge.status(full = false)
-            val config = if (device.moduleInstalled) ModuleBridge.readConfig() else TunerConfig()
+            val device = ModuleBridge.status(full = false) ?: run {
+                update { it.copy(rootState = RootState.GRANTED, snack = "Falha ao ler o estado do módulo") }
+                return@launch
+            }
+            val config = if (device.moduleInstalled) {
+                ModuleBridge.readConfig() ?: run {
+                    update { it.copy(rootState = RootState.GRANTED, device = device, snack = "Falha ao ler a configuração") }
+                    return@launch
+                }
+            } else TunerConfig()
+            persistedConfig = config
+            configLoaded = true
             update { it.copy(rootState = RootState.GRANTED, device = device, config = config) }
             if (!device.moduleInstalled) return@launch
-
-            val artStale = config.artUsap == TriState.ON || config.artDex2oatLittle == TriState.ON ||
-                config.artHeap == TriState.ON
 
             // Temp-root: KSU has no boot hook, so the first app launch of a boot session IS the
             // boot sequence (props + one SurfaceFlinger restart + zram + profile). Nothing on this
@@ -123,22 +135,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             // Always claim the first temp-root launch. Profile NONE can still have zram, renderer,
             // ART, thermal or the automatic-game watcher configured, so profile/fps alone are not
             // a valid test for whether the boot sequence has work to do.
-            val first = ModuleBridge.consumeFirstOfSession()
-            if (first) {
+            val claim = ModuleBridge.consumeFirstOfSession()
+            if (claim != null) {
                 update { it.copy(busy = setOf(Tier.LIVE)) }
-                val report = ModuleBridge.applyBoot()
-                // The ART props go missing on their own (seen live: the dex2oat cpuset was
-                // empty while the switch read ON). Re-asserting them costs a few resetprops.
-                if (artStale) ModuleBridge.applyArt()
-                finish(report, "Restaurado após o boot", full = true)
-            } else if (artStale) {
-                ModuleBridge.applyArt()
+                try {
+                    val report = ModuleBridge.applyBoot()
+                    // A claim spent on a failed restore would run the session untuned while the
+                    // UI looks normal. Release it so the next launch retries.
+                    finish(report, "Restaurado após o boot", full = true)
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
+                    update {
+                        it.copy(
+                            busy = it.busy - Tier.LIVE,
+                            snack = "Restauração após o boot falhou — será tentada de novo",
+                        )
+                    }
+                } finally {
+                    withContext(NonCancellable) { ModuleBridge.releaseFirstOfSession(claim) }
+                }
             }
 
             // Samsung/MARs info is worth having, just not on the critical path — fetch it once in
             // the background now that the screen is already up.
             launch {
-                val full = ModuleBridge.status(full = true)
+                val full = ModuleBridge.status(full = true) ?: return@launch
                 update { it.copy(device = it.device.copy(samsung = full.samsung)) }
             }
         }
@@ -169,10 +190,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             while (true) {
                 delay(3000)
-                val s = _uiState.value
-                if (!scrolling && s.rootState == RootState.GRANTED && s.busy.isEmpty() && s.device.moduleInstalled) {
-                    val d = ModuleBridge.status(full = false)
-                    update { it.copy(device = mergeSamsung(d, s.device)) }
+                // One bad poll (lost root, torn-down shell, unparseable line) must cost one
+                // poll, not the whole loop: an unguarded throw here ends this coroutine forever
+                // and the screen silently stops updating.
+                try {
+                    val s = _uiState.value
+                    if (!scrolling && s.rootState == RootState.GRANTED && s.busy.isEmpty() && s.device.moduleInstalled) {
+                        val d = ModuleBridge.status(full = false) ?: continue
+                        update { it.copy(device = mergeSamsung(d, s.device)) }
+                    }
+                } catch (e: Exception) {
+                    if (e is CancellationException) throw e
                 }
             }
         }
@@ -185,14 +213,44 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 if (!RootShellManager.hasRoot()) return@launch
                 update { it.copy(rootState = RootState.GRANTED) }
             }
-            val d = ModuleBridge.status(full = true)
-            val c = if (d.moduleInstalled) ModuleBridge.readConfig() else cfg()
+            val d = ModuleBridge.status(full = true) ?: run {
+                update { it.copy(snack = "Falha ao atualizar o estado do módulo") }
+                return@launch
+            }
+            val disk = if (d.moduleInstalled) ModuleBridge.readConfig() else null
+            val c = disk ?: cfg()
+            if (disk != null) { persistedConfig = disk; configLoaded = true }
             update { it.copy(device = d, config = c) }
         }
     }
 
     // ---------------- the one apply path ----------------
 
+    /**
+     * Writes the in-memory config to disk. A failed write (full /data, SELinux denial, lost
+     * root) rolls the optimistic edit back to what is actually on disk and reports it: running
+     * a tier script against the stale file and then snacking success would assert a state that
+     * exists nowhere — not in memory, not on disk, not in the kernel.
+     */
+    private suspend fun persistOrRevert(tier: Tier, label: String): Boolean {
+        if (ModuleBridge.writeConfig(_uiState.value.config)) {
+            persistedConfig = _uiState.value.config
+            configLoaded = true
+            return true
+        }
+        val disk = ModuleBridge.readConfig()?.also {
+            persistedConfig = it
+            configLoaded = true
+        } ?: persistedConfig.takeIf { configLoaded }
+        update {
+            it.copy(
+                config = disk ?: it.config,
+                busy = it.busy - tier,
+                snack = "$label — falha ao gravar; nada foi aplicado",
+            )
+        }
+        return false
+    }
     /**
      * Optimistic edit + debounced apply of a single tier. Rapid taps (dragging across the pill row,
      * flipping a switch back and forth) coalesce into one shell run instead of queueing a run per
@@ -210,7 +268,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pending[tier] = viewModelScope.launch {
             delay(220)
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
+                if (!persistOrRevert(tier, label)) return@withLock
                 val report = when (tier) {
                     Tier.LIVE -> ModuleBridge.applyLive()
                     Tier.RENDER -> ModuleBridge.applyRender(restartSf = false)
@@ -235,7 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update {
             it.copy(
                 busy = it.busy - tier,
-                device = mergeSamsung(device, it.device),
+                device = device?.let { fresh -> mergeSamsung(fresh, it.device) } ?: it.device,
                 report = report ?: it.report,
                 snack = msg,
             )
@@ -269,15 +327,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         edit(Tier.LIVE, "Guardião térmico ${onOff(on)}") { it.copy(thermalGuard = on) }
 
     fun setGos(pref: GosPref) = edit(Tier.LIVE, "GOS ${pref.cfg}") { it.copy(gos = pref) }
-    /** Disruptive (kills cached background apps), so it warns once — same pattern as Aggressive/
-     *  FPS/zram. Fires only when apply_profile.sh actually runs with profile=game afterwards. */
-    fun setGameRamClear(on: Boolean) {
-        if (on && !acked("game_ram_clear")) {
-            update { it.copy(dialog = Dialog.GAME_RAM_CLEAR) }
-            return
-        }
-        edit(Tier.LIVE, "Limpeza de RAM no Game ${onOff(on)}") { it.copy(gameRamClear = on) }
-    }
 
     /** "Limpar agora": the same one-shot reclaim, run on demand instead of tied to a profile
      *  switch. Pressing the button is itself the deliberate action — no extra confirmation. */
@@ -311,7 +360,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             if (started) delay(500)
             val d = ModuleBridge.status(full = false)
-            update { it.copy(device = mergeSamsung(d, it.device)) }
+            if (d != null) update { it.copy(device = mergeSamsung(d, it.device)) }
         }
     }
 
@@ -321,7 +370,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val d = ModuleBridge.status(full = false)
             update {
                 it.copy(
-                    device = mergeSamsung(d, it.device),
+                    device = d?.let { fresh -> mergeSamsung(fresh, it.device) } ?: it.device,
                     snack = if (stopped) "Medição interrompida; valores restaurados."
                     else "Não foi possível interromper a medição.",
                 )
@@ -345,13 +394,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         edit(Tier.RENDER, "RenderEngine $v") { it.copy(reBackend = v) }
     }
 
-    fun toggleFps(on: Boolean) {
-        if (on == cfg().fpsUnlock) return
-        if (on && !acked("fps")) { update { it.copy(dialog = Dialog.FPS) }; return }
-        edit(Tier.RENDER, "120fps ${onOff(on)}") { it.copy(fpsUnlock = on) }
-    }
-
-
     // ---------------- ART / zygote tier ----------------
     // These only become real on the next zygote start, so each change just marks the soft reboot as
     // pending; the banner asks once and the user decides when to pay for it.
@@ -367,7 +409,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update { it.copy(dialog = Dialog.NONE, busy = it.busy + Tier.ART) }
         viewModelScope.launch {
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
+                if (!persistOrRevert(Tier.ART, "Reinício leve")) return@withLock
                 val r = ModuleBridge.applyArt(softReboot = true)
                 finish(r, "Reinício leve disparado", Tier.ART)
             }
@@ -407,17 +449,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update { it.copy(config = cfg().copy(protectGames = on), busy = it.busy + Tier.LIVE) }
         viewModelScope.launch {
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
-                if (on) ModuleBridge.startKeepalive() else ModuleBridge.stopKeepalive()
+                if (!persistOrRevert(Tier.LIVE, "Proteção")) return@withLock
+                val processOk = if (on) ModuleBridge.startKeepalive() else ModuleBridge.stopKeepalive()
                 val device = ModuleBridge.status(full = true)
                 update {
                     it.copy(
                         busy = it.busy - Tier.LIVE,
-                        device = device,
+                        device = device ?: it.device,
                         snack = if (on) {
-                            if (device.keepalive) "Proteção ligada — vigia rodando"
+                            if (processOk && device?.keepalive == true) "Proteção ligada — vigia rodando"
                             else "Proteção pedida, mas o vigia não subiu"
-                        } else "Proteção desligada",
+                        } else if (processOk && device?.keepalive != true) "Proteção desligada"
+                        else "Falha ao parar a proteção — o vigia pode continuar ativo",
                     )
                 }
             }
@@ -432,7 +475,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update { it.copy(config = transform(cfg()), busy = it.busy + Tier.LIVE) }
         viewModelScope.launch {
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
+                if (!persistOrRevert(Tier.LIVE, label)) return@withLock
                 finish(ModuleBridge.applyProtect(), label, full = true)
             }
         }
@@ -462,13 +505,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update { it.copy(config = cfg().copy(samsungPerf = on), busy = it.busy + Tier.LIVE) }
         viewModelScope.launch {
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
+                val label = if (on) "Limitadores da Samsung desligados" else "Valores da Samsung restaurados"
+                if (!persistOrRevert(Tier.LIVE, label)) return@withLock
                 val report = ModuleBridge.applySamsung()
-                finish(
-                    report,
-                    if (on) "Limitadores da Samsung desligados" else "Valores da Samsung restaurados",
-                    full = true,
-                )
+                finish(report, label, full = true)
             }
         }
     }
@@ -480,7 +520,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         update { it.copy(dialog = Dialog.NONE, busy = it.busy + Tier.DEXOPT) }
         viewModelScope.launch {
             applyLock.withLock {
-                ModuleBridge.writeConfig(_uiState.value.config)
+                if (!persistOrRevert(Tier.DEXOPT, "Compilação")) return@withLock
                 val r = ModuleBridge.applyDexopt(reset)
                 finish(r, if (reset) "Compilação revertida" else "Jogos compilados (${cfg().dexoptMode})", Tier.DEXOPT)
             }
@@ -505,7 +545,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val next = cfg().copy(games = list)
             update { it.copy(config = next) }
-            ModuleBridge.writeConfig(next)
+            if (!ModuleBridge.writeConfig(next)) {
+                val disk = ModuleBridge.readConfig()?.also { persistedConfig = it; configLoaded = true }
+                update { it.copy(config = disk ?: persistedConfig.takeIf { configLoaded } ?: it.config, snack = "Falha ao gravar a lista — nada foi salvo") }
+                return@launch
+            }
+            persistedConfig = next
+            configLoaded = true
             update { it.copy(snack = "${list.size} jogo(s) na lista — toque em Compilar para aplicar") }
         }
     }
@@ -522,7 +568,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val next = cfg().copy(protectList = list)
             update { it.copy(config = next) }
-            ModuleBridge.writeConfig(next)
+            if (!ModuleBridge.writeConfig(next)) {
+                val disk = ModuleBridge.readConfig()?.also { persistedConfig = it; configLoaded = true }
+                update { it.copy(config = disk ?: persistedConfig.takeIf { configLoaded } ?: it.config, snack = "Falha ao gravar a lista — nada foi salvo") }
+                return@launch
+            }
+            persistedConfig = next
+            configLoaded = true
             update { it.copy(snack = "${list.size} app(s) na lista de proteção") }
         }
     }
@@ -534,10 +586,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Dialog.AGGRESSIVE -> {
                 ack("aggressive"); close()
                 edit(Tier.LIVE, "Térmico agressivo", contextConfirmed = true) { it.copy(thermal = ThermalMode.AGGRESSIVE) }
-            }
-            Dialog.FPS -> {
-                ack("fps"); close()
-                edit(Tier.RENDER, "120fps ligado", contextConfirmed = true) { it.copy(fpsUnlock = true) }
             }
             Dialog.LEARNING_CONTEXT -> {
                 val action = pendingContextAction
@@ -555,7 +603,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             Dialog.ZRAM -> confirmZram()
             Dialog.DEXOPT -> runDexopt(false)
             Dialog.DEXOPT_RESET -> runDexopt(true)
-            Dialog.GAME_RAM_CLEAR -> { ack("game_ram_clear"); close(); setGameRamClear(true) }
             Dialog.NONE -> {}
         }
     }

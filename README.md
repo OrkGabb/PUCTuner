@@ -8,7 +8,7 @@
 [![AI: MCTS PUCT](https://img.shields.io/badge/AI-MCTS%20PUCT%20(DeepMind%20RL)-purple.svg)](#-decision-algorithm-mcts--puct)
 [![License: GPLv3](https://img.shields.io/badge/License-GPLv3-lightgrey.svg)](LICENSE)
 
-> **The first closed-loop Reinforcement Learning autonomous hardware controller for Android (MCTS with PUCT selection, eBPF runqueue telemetry, and silicon-aware transition dynamics).**  
+> **A closed-loop experimental Android hardware controller using MCTS with PUCT selection, frame/PSI telemetry, and learned transition dynamics.**  
 > Reference production platform and calibration: **Samsung Galaxy M54 5G (SM-M546B / Exynos 1380)**.
 
 📖 **Core Documentation:** [Technical Deep-Dive & Architecture](docs/HOW_IT_WORKS.md) · [Benchmarks & Empirical Validation](docs/BENCHMARKS.md) · [eBPF Telemetry](docs/EBPF.md) · [Building Guide](BUILDING.md)
@@ -25,7 +25,7 @@ The Android customization community has historically been plagued by "snake-oil 
 |---|---|
 | Injects dead `ro.hwui.*_cache` props that modern Android never reads | Directly reads and writes proprietary sysfs nodes (`/sys/kernel/gpu/`, cpufreq, devfreq MIF) |
 | Pins CPU/GPU to maximum (`min == max`), accelerating thermal throttling | MCTS searches for the minimum effort required to sustain 60/120 Hz without thermal waste |
-| Requires users to manually switch profiles between gaming and battery saving | **Fully autonomous (`profile=auto`)**: detects thread saturation, frame lateness, and PSI stalls dynamically |
+| Requires users to manually switch profiles between gaming and battery saving | The adaptive controller reacts to frame evidence and PSI stalls while enabled; `profile` remains a separate static fallback/price tier |
 | Blind scripts that assume success if the shell returns 0 | Read-back verification: if the kernel driver caps or rejects a value, the UI flags it immediately |
 
 ---
@@ -58,9 +58,9 @@ flowchart TD
     end
 ```
 
-1. **`app/`**: Modern Kotlin and Jetpack Compose application optimized with R8 (`com.orkgabb.m54tuner`). Reads kernel state every frame without scroll hitching and provides transparent telemetry.
+1. **`app/`**: Kotlin and Jetpack Compose application optimized with R8 (`com.orkgabb.m54tuner`). Polls live device state every three seconds while idle and exposes the module's verification report.
 2. **`module/`**: Native module for KernelSU / Magisk executing in `init` context under strict SELinux **Enforcing** mode (no need for permissive mode or security compromises).
-3. **`module/bin/m54-adaptive`**: Standalone ARM64 daemon written in modern C++17, compiled with NDK Clang r28. Consumes less than 4 MB of RAM, running a rolling-horizon MCTS planning cycle every 6 seconds.
+3. **`module/bin/m54-adaptive`**: Standalone ARM64 daemon written in modern C++17, compiled with NDK Clang r28. Self-contained native binary with no interpreter/network/ML runtime dependencies; it polls sensors at 1 Hz and closes a planning window on frame evidence (4.5–12 s, nominally ~6 s). Verify its resident size live (e.g. `ps -o RSS -C m54-adaptive`) rather than trusting a fixed megabyte number here.
 
 ---
 
@@ -91,7 +91,9 @@ Where the cost vector $\mathbf{c}(s, a)$ comprises 9 real-time measured metrics:
 
 ### Evidence Aging and Surprise-Driven Re-exploration
 In mobile workloads, game scenes and thermal environments shift dynamically:
-1. **Exponential Evidence Decay (`freshEvidence`):** $N(s, a)$ decays by $2^{-\Delta \text{age} / 64}$, prompting MCTS to periodically revisit alternative actions.
+1. **Two half-lives, not one:** prediction trust decays as $N \cdot 2^{-\Delta \text{age} / 1024}$,
+   while the novelty re-ask clock decays as $2^{-\Delta \text{age} / 64}$ (asymmetric: releasing
+   effort is re-tried more freely than spending it). See `docs/HOW_IT_WORKS.md` §7.
 2. **Surprise Detection (`surprises`):** If real measurements deviate from predicted values by more than 4 standard deviations ($|\text{real} - \text{predicted}| > 4\sigma$), cell authority in that context is reset to 1 visit, triggering immediate active re-exploration.
 
 ---
@@ -107,11 +109,13 @@ Unlike generic Snapdragon platforms, the Exynos architecture features specific l
 * **Mali-G68 MP5 GPU (Valhall 2nd Gen / r1p1, Driver DDK r38p1-01):**
   * Governed exclusively through Samsung sysfs nodes in `/sys/kernel/gpu/` (not present in standard devfreq).
   * Operating frequencies: 221 MHz to 949 MHz.
-  * Fine-tuned `polling_speed` (15 ms) and `js_scheduling_period` (50 ms), mitigating the 20 FPS drops typical of heavy games (e.g. HoYoverse/Kuro titles).
+  * `polling_speed` 15 ms and `js_scheduling_period` 50 ms are the **game-preset** values
+    (`apply_profile.sh`); other presets use slower polling. They do not by themselves fix frame
+    drops in any specific title — measure per game instead of trusting the preset.
 * **Memory Bus (MIF):**
   * Kernel enforces a physical QoS ceiling at **2093 MHz**. Attempting to write higher clocks is discarded by the hardware driver. PUCTuner respects this ceiling and manipulates the **floor**, ensuring necessary DRAM bandwidth without false claims.
-* **Samsung MARs / Chimera Killer Bypass:**
-  * Samsung OneUI's aggressive task killer (`slmk`/`chimera` in `services.jar`) kills background game sessions arbitrarily. PUCTuner injects active processes into the official system `MARs_ExcludeTarget` table, preventing premature termination safely without modifying framework binaries.
+* **Samsung MARs / Chimera Killer Exemption (opt-in, off by default):**
+  * When `samsung_protect=1`, PUCTuner adds the listed packages to the official system `MARs_ExcludeTarget` table — the same list Device Care writes — without modifying framework binaries. "Bypass" would overstate it: it is a per-app exemption using the system's own mechanism. Inserts and removals are queried back; provider errors are failures rather than evidence of absence.
 
 ---
 

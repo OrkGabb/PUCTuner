@@ -30,11 +30,11 @@ trap 'end_apply_lock' EXIT INT TERM
 # save <table> <key> — records the CURRENT value once, before we ever touch it.
 save() {
   local v
-  [ -f "$BAK" ] || : > "$BAK"
   grep -qE "^$1\|$2=" "$BAK" 2>/dev/null && return 0
   v=$(settings get "$1" "$2" 2>/dev/null)
+  [ -n "$v" ] || return 1
   [ "$v" = "null" ] && v=__ABSENT__
-  echo "$1|$2=$v" >> "$BAK"
+  { [ ! -f "$BAK" ] || cat "$BAK"; echo "$1|$2=$v"; } | atomic_write "$BAK" 0600
 }
 
 restore_one() {
@@ -51,7 +51,7 @@ restore_one() {
 }
 
 set_one() {
-  save "$1" "$2"
+  save "$1" "$2" || { rep "sam.$2" fail backup "$3"; return 1; }
   settings put "$1" "$2" "$3" 2>/dev/null
   local got; got=$(settings get "$1" "$2" 2>/dev/null)
   if [ "$got" = "$3" ]; then rep "sam.$2" ok "$got" "$3"; else rep "sam.$2" fail "$got" "$3"; fi
@@ -74,3 +74,4 @@ else
 fi
 
 result_end
+exit $?

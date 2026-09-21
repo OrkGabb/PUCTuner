@@ -31,7 +31,10 @@ TMP="$M54_DIR/diagnostics.$$"
   done
   echo "LOG"
   tail -200 "$LOG" 2>/dev/null
-} | atomic_write "$TMP" 0600
-cp -f "$TMP" "$OUT" && chmod 0644 "$OUT"
-rm -f "$TMP"
+} | atomic_write "$TMP" 0600 || { rm -f "$TMP"; exit 1; }
+if ! cp -f "$TMP" "$OUT" || ! chmod 0644 "$OUT"; then
+  rm -f "$TMP"
+  exit 1
+fi
+rm -f "$TMP" || exit 1
 echo "$OUT"

@@ -35,7 +35,7 @@ ADJ=$(clamp_int "$ADJ" -850 500 -700)
 
 if pid_record_alive "$PIDF" keepalive.sh; then exit 0; fi
 rm -f "$PIDF"
-pid_record_write "$PIDF" keepalive.sh
+pid_record_write "$PIDF" keepalive.sh || { log "keepalive: PID publication failed"; exit 1; }
 cleanup_keepalive() {
   trap - EXIT INT TERM
   [ "$(pid_record_pid "$PIDF")" = "$$" ] && rm -f "$PIDF"

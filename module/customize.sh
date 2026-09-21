@@ -43,7 +43,6 @@ samsung_mars_off=0
 protect_list=
 protect_adj=-700
 protect_interval=1
-game_ram_clear=1
 adaptive_ram_management=0
 pelt=2
 thermal_guard=1
@@ -57,7 +56,6 @@ zram_algo=lz4
 # ---- render tier (apply_render.sh) ----
 hwui_renderer=skiagl
 re_backend=skiaglthreaded
-fps_unlock=0
 render_apps=
 restart_systemui=0
 # ---- ART/zygote tier (apply_art.sh) — needs a soft reboot to take effect ----
@@ -83,7 +81,6 @@ else
   add_key protect_list ""
   add_key protect_adj -700
   add_key protect_interval 1
-  add_key game_ram_clear 1
   add_key adaptive_ram_management 0
   add_key pelt 2
   add_key thermal_guard 1
@@ -110,6 +107,13 @@ fi
 
 chmod 0600 "$M54_DIR/config" 2>/dev/null
 touch "$MODPATH/skip_mount"
+
+# Retired payloads must not survive across updates: disabling a module never kills what it
+# started, and neither does flashing over it. fas-rs companion mode was removed in v0.11.0
+# (the engine stands down from foreign tuners instead of yielding axes to one); a stale
+# fas/ directory from an older install would otherwise sit on the device implying a mode
+# that no longer exists.
+rm -rf "$MODPATH/fas" 2>/dev/null
 
 set_perm_recursive "$MODPATH" 0 0 0755 0644
 set_perm_recursive "$MODPATH/scripts" 0 0 0755 0755

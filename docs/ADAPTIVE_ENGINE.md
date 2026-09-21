@@ -45,7 +45,9 @@ $$\text{PUCT}(s, a) = Q(s, a) + c_{\text{puct}} \cdot P(s, a) \cdot \frac{\sqrt{
    - PELT multiplier (1x vs 2x)
 3. **Critic & Value Network:** Online Temporal-Difference learning (TD-learning) continuously updating value estimates $V(s)$.
 4. **Dirichlet Noise & Exploration:** Root Dirichlet noise injection prevents premature convergence.
-5. **Evidence Aging:** Prior visit counts decay over time ($2^{-\Delta \text{age} / 64}$), prompting periodic re-evaluation.
+5. **Evidence Aging:** Two half-lives: prediction trust decays as $2^{-\Delta \text{age} / 1024}$,
+   the novelty re-ask clock as $2^{-\Delta \text{age} / 64}$ (see `HOW_IT_WORKS.md` §7 — one
+   constant served both jobs and destroyed the first).
 6. **Surprise Threshold:** When real cost exceeds 4 standard deviations from prediction, prior authority is reset to trigger instant re-exploration.
 
 ## Reading Decision Telemetry

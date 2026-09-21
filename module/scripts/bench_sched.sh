@@ -21,6 +21,7 @@ STATE="$M54_DIR/bench_sched_state"
 PELT_NODE=/proc/sys/kernel/sched_pelt_multiplier
 EAS_NODE=/proc/sys/kernel/sched_energy_aware
 ORIG_FILE="$M54_DIR/bench_sched_original"
+ACK="$M54_DIR/bench_sched_restore_ok"
 
 case "$STEP" in ''|*[!0-9]*) STEP=45;; esac
 case "$ROUNDS" in ''|*[!0-9]*) ROUNDS=2;; esac
@@ -37,7 +38,8 @@ if pid_record_alive "$M54_DIR/bench_sched_pid" bench_sched.sh; then
   exit 1
 fi
 rm -f "$M54_DIR/bench_sched_pid"
-pid_record_write "$M54_DIR/bench_sched_pid" bench_sched.sh
+rm -f "$ACK"
+pid_record_write "$M54_DIR/bench_sched_pid" bench_sched.sh || { echo "benchmark PID publication failed"; exit 1; }
 if ! sh "$DIR/adaptive_stop.sh"; then
   rm -f "$M54_DIR/bench_sched_pid"
   exit 1
@@ -45,17 +47,30 @@ fi
 
 ORIG_PELT=$(cat "$PELT_NODE" 2>/dev/null)
 ORIG_EAS=$(cat "$EAS_NODE" 2>/dev/null)
-printf '%s\n%s\n' "$ORIG_PELT" "$ORIG_EAS" > "$ORIG_FILE"
-chmod 0600 "$ORIG_FILE" 2>/dev/null
+case "$ORIG_PELT:$ORIG_EAS" in 1:0|1:1|2:0|2:1|4:0|4:1) ;;
+  *) rm -f "$M54_DIR/bench_sched_pid"; sh "$DIR/adaptive_start.sh" >/dev/null 2>&1; exit 1;; esac
+printf '%s\n%s\n' "$ORIG_PELT" "$ORIG_EAS" | atomic_write "$ORIG_FILE" 0600 || {
+  rm -f "$M54_DIR/bench_sched_pid"
+  sh "$DIR/adaptive_start.sh" >/dev/null 2>&1
+  exit 1
+}
 
 cleanup() {
   [ "$$" = "$MAIN_PID" ] || return 0
-  dumpsys SurfaceFlinger --timestats -disable >/dev/null 2>&1
-  M54_SKIP_RAM_CLEAR=1 sh "$DIR/apply_profile.sh" >/dev/null 2>&1
-  case "$ORIG_PELT" in 1|2|4) echo "$ORIG_PELT" > "$PELT_NODE" 2>/dev/null;; esac
-  case "$ORIG_EAS" in 0|1) echo "$ORIG_EAS" > "$EAS_NODE" 2>/dev/null;; esac
-  rm -f "$M54_DIR/bench_sched_pid" "$ORIG_FILE"
-  sh "$DIR/adaptive_start.sh"
+  local rc=0
+  dumpsys SurfaceFlinger --timestats -disable >/dev/null 2>&1 || rc=1
+  sh "$DIR/apply_profile.sh" >/dev/null 2>&1 || rc=1
+  case "$ORIG_PELT" in 1|2|4) echo "$ORIG_PELT" > "$PELT_NODE" 2>/dev/null || rc=1;; *) rc=1;; esac
+  case "$ORIG_EAS" in 0|1) echo "$ORIG_EAS" > "$EAS_NODE" 2>/dev/null || rc=1;; *) rc=1;; esac
+  [ "$(cat "$PELT_NODE" 2>/dev/null)" = "$ORIG_PELT" ] || rc=1
+  [ "$(cat "$EAS_NODE" 2>/dev/null)" = "$ORIG_EAS" ] || rc=1
+  if [ "$rc" = 0 ]; then
+    rm -f "$M54_DIR/bench_sched_pid" "$ORIG_FILE"
+    if sh "$DIR/adaptive_start.sh" >/dev/null 2>&1; then touch "$ACK" || rc=1
+    else rc=1; fi
+  fi
+  [ "$rc" = 0 ] || echo "restore_failed" > "$STATE"
+  return "$rc"
 }
 trap cleanup EXIT INT TERM
 
@@ -82,7 +97,7 @@ max_temp_c() {
 
 step_run() {
   local round="$1" pelt="$2" eas="$3" t0 d hist parsed total med st score t1
-  M54_BENCH_PELT="$pelt" M54_BENCH_EAS="$eas" M54_SKIP_RAM_CLEAR=1 \
+  M54_BENCH_PELT="$pelt" M54_BENCH_EAS="$eas" \
     sh "$DIR/apply_profile.sh" >/dev/null 2>&1
   if [ "$(cat "$PELT_NODE" 2>/dev/null)" != "$pelt" ] || \
      [ "$(cat "$EAS_NODE" 2>/dev/null)" != "$eas" ]; then

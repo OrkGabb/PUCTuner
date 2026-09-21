@@ -14,14 +14,21 @@ else
   tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null | grep -Fq keepalive.sh || {
     rm -f "$PIDF"; echo "registro obsoleto removido"; exit 0; }
 fi
-kill -TERM "$PID" 2>/dev/null
+kill -TERM "$PID" 2>/dev/null || exit 1
 i=0
 while [ "$i" -lt 8 ]; do
   kill -0 "$PID" 2>/dev/null || break
   sleep 1
   i=$((i + 1))
 done
-kill -0 "$PID" 2>/dev/null && kill -9 "$PID" 2>/dev/null
+if pid_record_alive "$PIDF" keepalive.sh; then
+  kill -9 "$PID" 2>/dev/null || exit 1
+  sleep 1
+fi
+if pid_record_alive "$PIDF" keepalive.sh; then
+  log "keepalive: falha ao parar pid=$PID"
+  exit 1
+fi
 rm -f "$PIDF"
 log "keepalive: parado"
 echo "keepalive parado"

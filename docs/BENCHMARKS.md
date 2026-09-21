@@ -6,37 +6,41 @@ This document records the empirical validation of PUCTuner across unit testing, 
 
 ## 1. Closed-Loop Simulation Benchmarks
 
-Simulated across **900 windows of 6 seconds each (1.5 hours of continuous execution per workload)**, evaluated across **7 independent random seeds** with synthetic noise, latency jitter, and thermal accumulation.
+Simulated over **900 windows per workload** (fixed 6 s steps in the simulator; the on-device
+windows close on frame evidence between 4.5 s and 12 s), evaluated across **7 independent random
+seeds** with synthetic noise, latency jitter, and thermal accumulation. **These are simulator
+outputs, not device measurements**: the synthetic device is built to reward the controller's own
+assumptions, so passing here shows the loop converges toward the objective it was given — not a
+gain on the real M54. Do not quote point values below as empirical results; re-run
+`tests/engine_sim.cpp` for the current numbers (they drift with seeds and toolchains, and the
+phase test below already demonstrated a 7-seed/35-seed order inversion once).
 
-### Scenario Results
+### Scenario Results (illustrative, one 7-seed run — 2026-09-20)
 
-| Scenario | Objective | Mean Effort (0–16) | Mean GPU Floor | Frame Latency p95 | Normalized Reward | Peak SoC Temp | Thermal Breaches (> 75°C) |
+| Scenario | Objective | Mean Effort (0–16) | Mean GPU Floor | Frame Latency p95 | Normalized Reward | Peak SoC Temp | Thermal Breaches |
 |---|---|---:|---:|---:|---:|---:|---:|
-| **Game / Responsive** | Responsive | **3.10** | 2.58 | **15.1 ms** | **+0.844** | 47.5°C | **0** |
-| **Game / Flat (Unresponsive)** | No scaling benefit | **0.37** | 0.10 | 26.0 ms | +0.550 | 44.6°C | **0** |
-| **Game / Hostile Heat** | Heavy heat accumulation | **2.07** | 1.69 | 18.8 ms | +0.747 | 73.4°C | **0** |
-| **Powersave / Responsive** | High energy penalty | **1.50** | 1.35 | 20.3 ms | +0.533 | 40.3°C | **0** |
-| **Balanced / Responsive** | Production default | **1.90** | 1.78 | 18.5 ms | +0.698 | 42.2°C | **0** |
+| **Game / Responsive** | Responsive | 3.62 | 2.72 | 14.3 ms | +0.843 | 49.6°C | **0** |
+| **Game / Flat (Unresponsive)** | No scaling benefit | 0.29 | 0.07 | 26.0 ms | +0.551 | 44.6°C | **0** |
+| **Game / Hostile Heat** | Heavy heat accumulation | 2.02 | 1.71 | 18.8 ms | +0.770 | 71.0°C | **0** |
+| **Powersave / Responsive** | High energy penalty | 1.65 | 1.45 | 19.9 ms | +0.534 | 40.3°C | **0** |
+| **Balanced / Responsive** | Production default | 1.94 | 1.81 | 18.4 ms | +0.699 | 41.5°C | **0** |
 
 ### Key Findings:
-1. **Refusal to Overspend:** When the workload ceases to benefit from higher frequencies (`Game/Flat`), the controller **reduces effort by 88%** (from 3.10 to 0.37), refusing to burn energy for zero frame pacing gain.
-2. **Thermal Ceiling Respect:** In the hostile heat curve scenario, the controller dynamically trims hardware floors, capping peak temperature at **73.4°C** with **zero threshold breaches** over 898 evaluated windows.
+1. **Refusal to Overspend:** When the workload ceases to benefit from higher frequencies (`Game/Flat`), the controller drops to near-zero effort, refusing to burn energy for zero frame pacing gain.
+2. **Thermal Ceiling Respect:** In the hostile heat curve scenario, the controller dynamically trims hardware floors with **zero threshold breaches** (worst seed reported, not just the mean).
 
 ---
 
 ## 2. Dynamic Adaptation to Unannounced Workload Shifts
 
-Evaluated in continuous execution where the underlying hardware responsiveness changes without notifying the controller:
+Evaluated in continuous execution where the underlying hardware responsiveness changes without notifying the controller (450 windows per phase, 21 seeds; looser bars than the static scenarios on purpose — re-detecting a recovered edge from zero effort is partly a re-exploration draw):
 
 ```text
 [Phase 1: Responsive] ──▶ [Phase 2: Flat / No Benefit] ──▶ [Phase 3: Partial Benefit]
-     Effort: 1.90                 Effort: 0.17                    Effort: 0.73
-     p95: 18.5 ms                 p95: 26.0 ms                    p95: 23.4 ms
-     Reward: +0.698               Reward: +0.518                  Reward: +0.580
 ```
 
-* **Phase 1 → Phase 2:** When boosting frequencies no longer reduces frame delay, the engine automatically **drops effort from 1.90 to 0.17 (-91%)**.
-* **Phase 2 → Phase 3:** When responsiveness partially returns, the engine's surprise-detection mechanism re-opens exploration, settling on a conservative operating point (**effort 0.73**).
+* **Phase 1 → Phase 2:** When boosting frequencies no longer reduces frame delay, the engine automatically drops effort toward zero.
+* **Phase 2 → Phase 3:** When responsiveness partially returns, the engine's surprise-detection mechanism re-opens exploration, settling on a conservative operating point.
 
 ---
 
@@ -51,7 +55,13 @@ Measured on physical hardware (Samsung Galaxy M54 5G, Exynos 1380, 120 Hz Super 
 | **Peak Scheduler Runqueue Latency** | **7.0 ms – 11.9 ms** | **Consumes 84% to 143% of the entire frame budget!** Guarantees an immediate dropped frame / stutter at 120 Hz. | Consumes 42%–71% of a 60 Hz budget (16.6 ms) |
 | **Instances Exceeding 4.0 ms** | **0.5% – 1.4%** | Consumes >48% of the 120 Hz window before rendering begins | Noticeable pacing jitter |
 
-On a 120 Hz panel, the frame window is razor-thin: **8.33 ms**. Legacy tools (such as `/proc/stat` or standard `dumpsys SurfaceFlinger`) only show average utilization or post-facto frame intervals; they are completely blind to thread scheduling delays. The in-kernel eBPF probe proves that even with GPU load below 80%, a render thread sitting runnable for 11.9 ms in the Linux scheduler queue directly causes 120 Hz frame drops. PUCTuner detects this queue pressure and elevates cluster floors to eliminate the bottleneck.
+On a 120 Hz panel, the frame window is razor-thin: **8.33 ms**. Legacy tools (such as `/proc/stat` or standard `dumpsys SurfaceFlinger`) only show average utilization or post-facto frame intervals; they are completely blind to thread scheduling delays. The in-kernel eBPF probe measures that delay — e.g. a render thread sitting runnable for 11.9 ms in the Linux scheduler queue directly explains 120 Hz frame drops even with GPU load below 80%.
+
+What the probe does NOT do today is steer actuation: the queue channel is carried into the
+feature vector and the history file as telemetry, but it is deliberately excluded from the
+objective (`Deficit::primary()` reads frames, else stall) until it demonstrates correlation with
+observed stutter on this device's own windows. Any sentence of the form "the controller detects
+queue pressure and raises floors" describes a future, not the current code.
 
 ---
 

@@ -4,7 +4,7 @@
 
 umask 077
 
-M54_DIR=/data/adb/m54tuner
+M54_DIR=${M54_DIR:-/data/adb/m54tuner}
 CONFIG="$M54_DIR/config"
 FACTORY="$M54_DIR/factory"
 case "${M54_OP_ID:-}" in *[!A-Za-z0-9._-]*) M54_OP_ID="" ;; esac
@@ -30,8 +30,8 @@ log() {
 atomic_write() {
   local dst="$1" mode="${2:-0600}" tmp="$1.tmp.$$"
   cat > "$tmp" || { rm -f "$tmp"; return 1; }
-  chmod "$mode" "$tmp" 2>/dev/null
-  mv -f "$tmp" "$dst"
+  chmod "$mode" "$tmp" 2>/dev/null || { rm -f "$tmp"; return 1; }
+  mv -f "$tmp" "$dst" || { rm -f "$tmp"; return 1; }
 }
 
 valid_pkg() { echo "$1" | grep -Eq '^[A-Za-z0-9_]+([.][A-Za-z0-9_]+)+$'; }
@@ -52,8 +52,13 @@ begin_apply_lock() {
   local i=0 owner oboot ostart live_start
   while [ "$i" -lt 30 ]; do
     if mkdir "$APPLY_LOCK" 2>/dev/null; then
-      { echo "pid=$$"; echo "boot=$(boot_id)"; echo "start=$(proc_start_s $$)"; } |
-        atomic_write "$APPLY_LOCK/owner" 0600
+      if ! { echo "pid=$$"; echo "boot=$(boot_id)"; echo "start=$(proc_start_s $$)"; } |
+        atomic_write "$APPLY_LOCK/owner" 0600; then
+        # A lock without a durable owner record is not owned. Publishing failure used to be
+        # ignored, allowing another process to reclaim the directory while this writer proceeded.
+        rmdir "$APPLY_LOCK" 2>/dev/null
+        return 1
+      fi
       M54_OWNS_LOCK=1
       return 0
     fi
@@ -82,9 +87,13 @@ begin_apply_lock() {
 
 end_apply_lock() {
   [ "${M54_OWNS_LOCK:-}" = "1" ] || return 0
-  local owner
+  local owner owner_start owner_boot
   owner=$(grep '^pid=' "$APPLY_LOCK/owner" 2>/dev/null | cut -d= -f2)
-  [ "$owner" = "$$" ] && rm -rf "$APPLY_LOCK" 2>/dev/null
+  owner_start=$(grep '^start=' "$APPLY_LOCK/owner" 2>/dev/null | cut -d= -f2)
+  owner_boot=$(grep '^boot=' "$APPLY_LOCK/owner" 2>/dev/null | cut -d= -f2-)
+  if [ "$owner" = "$$" ] && [ "$owner_start" = "$(proc_start_s $$)" ] && [ "$owner_boot" = "$(boot_id)" ]; then
+    rm -rf "$APPLY_LOCK" 2>/dev/null
+  fi
   M54_OWNS_LOCK=0
 }
 
@@ -97,12 +106,28 @@ end_apply_lock() {
 # ---------------------------------------------------------------------------
 # Set M54_RESULT_APPEND=1 to keep the previous sections (the boot sequence runs several scripts
 # and the app wants one combined report instead of only the last one).
+M54_RESULT_FAILED=0
+M54_RESULT_IO_FAILED=0
 result_begin() {
-  [ "$M54_RESULT_APPEND" = "1" ] || : > "$RESULT"
-  echo "T|$(date '+%s')|$1" >> "$RESULT"
+  M54_RESULT_FAILED=0
+  M54_RESULT_IO_FAILED=0
+  if [ "${M54_RESULT_APPEND:-0}" != "1" ]; then
+    : > "$RESULT" 2>/dev/null || M54_RESULT_IO_FAILED=1
+  fi
+  echo "T|$(date '+%s')|$1" >> "$RESULT" 2>/dev/null || M54_RESULT_IO_FAILED=1
+  [ "$M54_RESULT_IO_FAILED" = 0 ]
 }
-result_end()   { echo "E|$(date '+%s')" >> "$RESULT"; }
-rep() { echo "R|$1|$2|$3|$4" >> "$RESULT" 2>/dev/null; }
+rep() {
+  [ "$2" = fail ] && M54_RESULT_FAILED=1
+  echo "R|$1|$2|$3|$4" >> "$RESULT" 2>/dev/null || M54_RESULT_IO_FAILED=1
+  return 0
+}
+result_end() {
+  local state=ok
+  [ "$M54_RESULT_FAILED" = 0 ] && [ "$M54_RESULT_IO_FAILED" = 0 ] || state=fail
+  echo "E|$(date '+%s')|$state" >> "$RESULT" 2>/dev/null || M54_RESULT_IO_FAILED=1
+  [ "$M54_RESULT_FAILED" = 0 ] && [ "$M54_RESULT_IO_FAILED" = 0 ]
+}
 
 # read_cfg <key> <default>
 read_cfg() {
@@ -209,12 +234,18 @@ pdel() { local rp; rp=$(resetprop_bin); $rp --delete "$1" 2>/dev/null; }
 apply_prop() {
   local key="$1" prop="$2" value="$3" got
   if [ -z "$value" ]; then
-    pdel "$prop"; rep "$key" ok "$(getprop "$prop")" "-"; return 0
+    # A delete is a write like any other: read back, do not assume. An absent prop reads
+    # empty, which is also the success state, so a delete of a prop that was never there
+    # is honestly reported ok -- but a surviving value is a failure, not a success.
+    pdel "$prop"
+    got=$(getprop "$prop")
+    if [ -z "$got" ]; then rep "$key" ok "-" "-"; return 0
+    else rep "$key" fail "$got" "-"; log "FAIL prop-delete $prop still=$got"; return 1; fi
   fi
   pset "$prop" "$value"
   got=$(getprop "$prop")
-  if [ "$got" = "$value" ]; then rep "$key" ok "$got" "$value"
-  else rep "$key" fail "$got" "$value"; log "FAIL prop $prop want=$value got=$got"; fi
+  if [ "$got" = "$value" ]; then rep "$key" ok "$got" "$value"; return 0
+  else rep "$key" fail "$got" "$value"; log "FAIL prop $prop want=$value got=$got"; return 1; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -235,7 +266,11 @@ force_stop_apps() {
     g=$(echo "$g" | tr -d ' ')
     [ -z "$g" ] && continue
     pm path "$g" >/dev/null 2>&1 || continue
-    cmd activity force-stop "$g" >/dev/null 2>&1 && n=$((n+1))
+    if cmd activity force-stop "$g" >/dev/null 2>&1 && [ -z "$(pidof "$g" 2>/dev/null)" ]; then
+      n=$((n+1))
+    else
+      rep "render.restart_apps.$g" fail running stopped
+    fi
   done
   unset IFS
   rep "render.restart_apps" ok "$n" "$n"
@@ -253,9 +288,12 @@ restart_sf() {
     i=$((i + 1))
   done
   if [ "$after" -gt 0 ] 2>/dev/null && [ "$after" != "$before" ]; then
-    touch /dev/.m54tuner_sf_done
-    rm -f "$M54_DIR/pending_sf"
-    rep "render.sf_restart" ok "$after" "$before"
+    if touch /dev/.m54tuner_sf_done && rm -f "$M54_DIR/pending_sf"; then
+      rep "render.sf_restart" ok "$after" "$before"
+    else
+      rep "render.sf_restart" fail marker restart
+      return 1
+    fi
   else
     mark_pending_sf
     rep "render.sf_restart" fail "$after" restart
@@ -264,7 +302,10 @@ restart_sf() {
   fi
 }
 
-mark_pending_sf() { touch "$M54_DIR/pending_sf"; rep "render.sf_pending" warn pending pending; }
+mark_pending_sf() {
+  if touch "$M54_DIR/pending_sf"; then rep "render.sf_pending" warn pending pending
+  else rep "render.sf_pending" fail marker pending; return 1; fi
+}
 
 # first_pid <name...> — the pid of a running service, or 0 (pidof can return several, e.g. zygote
 # and zygote64).
@@ -346,11 +387,11 @@ boot_id() { cat /proc/sys/kernel/random/boot_id 2>/dev/null; }
 # ---------------------------------------------------------------------------
 mem_avail() { grep MemAvailable /proc/meminfo | awk '{print $2}'; }
 
-# game_ram_clear — kill background/cached apps only. `cmd activity kill-all`
+# clear_background_ram — kill background/cached apps only. `cmd activity kill-all`
 # never touches the foreground app (M54 Tuner itself, or whatever triggered this) nor persistent /
 # system services — it targets exactly the cached processes the kernel would pick first anyway.
 # Reports the before/after MemAvailable (kB) so the app can show what it actually bought.
-game_ram_clear() {
+clear_background_ram() {
   local before after delta rc=0
   before=$(mem_avail)
   cmd activity kill-all >/dev/null 2>&1 || am kill-all >/dev/null 2>&1 || rc=1
@@ -373,7 +414,9 @@ game_ram_clear() {
 # ---------------------------------------------------------------------------
 prop_remember() {
   grep -qE "^$1=" "$FPROPS" 2>/dev/null && return
-  echo "$1=$(getprop "$1")" >> "$FPROPS"
+  local original
+  original=$(getprop "$1")
+  { [ ! -f "$FPROPS" ] || cat "$FPROPS"; echo "$1=$original"; } | atomic_write "$FPROPS" 0600
 }
 prop_orig() { grep -E "^$1=" "$FPROPS" 2>/dev/null | tail -1 | cut -d= -f2-; }
 
@@ -381,7 +424,7 @@ prop_orig() { grep -E "^$1=" "$FPROPS" 2>/dev/null | tail -1 | cut -d= -f2-; }
 # (deleting only when the prop did not exist in the first place).
 apply_prop_managed() {
   local key="$1" prop="$2" value="$3" orig
-  prop_remember "$prop"
+  prop_remember "$prop" || { rep "$key" fail backup "$value"; return 1; }
   if [ -n "$value" ]; then apply_prop "$key" "$prop" "$value"; return; fi
   orig=$(prop_orig "$prop")
   if [ -n "$orig" ]; then apply_prop "$key" "$prop" "$orig"
@@ -413,7 +456,10 @@ apply_prop_tri() {
 # Same rule as the SurfaceFlinger restart: never implicit. A tier that needs it writes
 # $M54_DIR/pending_soft, the UI asks, and only then does soft_reboot() run.
 # ---------------------------------------------------------------------------
-mark_pending_soft() { touch "$M54_DIR/pending_soft"; rep "art.soft_pending" warn pending pending; }
+mark_pending_soft() {
+  if touch "$M54_DIR/pending_soft"; then rep "art.soft_pending" warn pending pending
+  else rep "art.soft_pending" fail marker pending; return 1; fi
+}
 
 soft_reboot() {
   local before after i=0

@@ -8,7 +8,7 @@ PIDF="$M54_DIR/thermal_guard_pid"
 STATE="$M54_DIR/thermal_guard_state"
 if pid_record_alive "$PIDF" thermal_guard.sh; then exit 0; fi
 rm -f "$PIDF"
-pid_record_write "$PIDF" thermal_guard.sh
+pid_record_write "$PIDF" thermal_guard.sh || { log "thermal guard: PID publication failed"; exit 1; }
 cleanup_guard() {
   trap - EXIT INT TERM
   [ "$(pid_record_pid "$PIDF")" = "$$" ] && rm -f "$PIDF"

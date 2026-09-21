@@ -25,5 +25,12 @@ with zipfile.ZipFile(archive) as check:
     assert "bin/m54-adaptive" in check.namelist()
 apk = root / "app/build/outputs/apk/release/app-release.apk"
 shutil.copy2(apk, root / "m54tuner-release.apk")
+module_version = next(
+    line.split("=", 1)[1].removeprefix("v")
+    for line in (root / "module/module.prop").read_text().splitlines()
+    if line.startswith("version=")
+)
+shutil.copy2(archive, root / f"PUCTuner-v{module_version}-module.zip")
+shutil.copy2(apk, root / f"PUCTuner-v{module_version}.apk")
 for file in (archive, root / "m54tuner-release.apk"):
     print(file.name, file.stat().st_size, hashlib.sha256(file.read_bytes()).hexdigest())

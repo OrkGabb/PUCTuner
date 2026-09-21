@@ -38,7 +38,7 @@ The `sf` scope is **never** executed automatically outside of boot: `apply_rende
 | `post-fs-data.sh` | — | Early boot: factory state snapshot & boot props (`apply_render.sh --boot`) |
 | `service.sh` | all | Late boot: render → memory → profile, in strict sequence |
 | `scripts/apply_profile.sh` | live | Live profile switching, thermals, GPU, I/O, GOS |
-| `scripts/apply_render.sh` | apps/sf | Renderer backend, HWUI caches, RenderEngine, 120 FPS latch |
+| `scripts/apply_render.sh` | apps/sf | Renderer backend, HWUI caches, RenderEngine |
 | `scripts/apply_mem.sh` | mem | ZRAM compression algorithm + swappiness |
 | `scripts/apply_dexopt.sh` | dexopt | `speed-profile` by default; `speed` explicit option |
 | `scripts/adaptive_start.sh`| live | Launches background `m54-adaptive` daemon |

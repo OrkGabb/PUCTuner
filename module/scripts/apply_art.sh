@@ -38,6 +38,29 @@ result_begin "art"
 if ! begin_apply_lock; then rep module.lock fail busy art; result_end; exit 1; fi
 trap 'end_apply_lock' EXIT INT TERM
 
+# Capture drift before rewriting the properties. A matching state-file signature only says what a
+# previous run requested; it cannot prove another root tool did not change the live property later.
+PROP_DRIFT=0
+art_differs() { [ "$(getprop "$1")" != "$2" ] && PROP_DRIFT=1; }
+if [ "$USAP" = on ]; then
+  art_differs dalvik.vm.usap_pool_enabled true
+  art_differs dalvik.vm.usap_pool_size_max 4
+  art_differs dalvik.vm.usap_pool_size_min 2
+  art_differs dalvik.vm.usap_refill_threshold 2
+elif [ "$USAP" = off ] && [ -f "$FPROPS" ]; then
+  for p in dalvik.vm.usap_pool_enabled dalvik.vm.usap_pool_size_max dalvik.vm.usap_pool_size_min dalvik.vm.usap_refill_threshold; do
+    art_differs "$p" "$(prop_orig "$p")"
+  done
+fi
+if [ "$DEXCPU" = on ]; then
+  art_differs dalvik.vm.dex2oat-threads 4
+  art_differs dalvik.vm.dex2oat-cpu-set 0,1,2,3
+elif [ "$DEXCPU" = off ] && [ -f "$FPROPS" ]; then
+  for p in dalvik.vm.dex2oat-threads dalvik.vm.dex2oat-cpu-set; do art_differs "$p" "$(prop_orig "$p")"; done
+fi
+if [ "$HEAP" = on ]; then art_differs dalvik.vm.heapgrowthlimit 288m
+elif [ "$HEAP" = off ] && [ -f "$FPROPS" ]; then art_differs dalvik.vm.heapgrowthlimit "$(prop_orig dalvik.vm.heapgrowthlimit)"; fi
+
 # ---------------------------------------------------------------------------
 # 1. USAP — Unspecialized App Process pool. Zygote keeps N pre-forked, pre-warmed processes ready,
 #    so a cold app start skips fork+preload. Samsung ships it DISABLED (probed: usap_pool_enabled
@@ -93,6 +116,12 @@ case "$HEAP" in
   *)   rep art.heap skip "$(getprop dalvik.vm.heapgrowthlimit)" auto ;;
 esac
 
+if [ "$M54_RESULT_FAILED" != 0 ] || [ "$M54_RESULT_IO_FAILED" != 0 ]; then
+  rep art.scope fail write-failed unchanged
+  result_end
+  exit $?
+fi
+
 # ---------------------------------------------------------------------------
 # Scope: did anything change relative to the zygote that is currently running?
 # ---------------------------------------------------------------------------
@@ -105,15 +134,17 @@ case "$OLD_AT" in ''|*[!0-9]*) OLD_AT=0;; esac
 if [ "$OLD_BOOT" != "$BOOT_NOW" ]; then OLD_SIG=""; OLD_AT=0; fi
 
 if [ "$BOOT" = "1" ]; then
-  { echo "$SIG"; echo "at=0"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600
-  rm -f "$M54_DIR/pending_soft"
+  { echo "$SIG"; echo "at=0"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600 || rep art.state fail write boot
+  rm -f "$M54_DIR/pending_soft" || rep art.pending fail remove absent
   rep art.scope ok boot boot
   result_end
+  rc=$?
   log "art applied at boot (zygote reads it naturally)"
-  exit 0
+  exit "$rc"
 fi
 NEED=0
 [ "$SIG" != "$OLD_SIG" ] && NEED=1
+[ "$PROP_DRIFT" = 1 ] && NEED=1
 # All three on `auto` means nothing here is managed — no prop was written, so there is nothing for
 # a soft reboot to make live. Never ask for one in that case.
 if [ "$USAP" = auto ] && [ "$DEXCPU" = auto ] && [ "$HEAP" = auto ]; then NEED=0; fi
@@ -128,19 +159,25 @@ fi
 
 ZYG_START=$(proc_start_s "$(first_pid zygote64 zygote)")
 if [ "$DO_SOFT" = "1" ] && [ "$ZYG_START" -lt "$OLD_AT" ] 2>/dev/null; then
-  { echo "$OLD_SIG"; echo "at=$OLD_AT"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600
-  result_end
+  { echo "$OLD_SIG"; echo "at=$OLD_AT"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600 || {
+    rep art.state fail write pre-restart
+    result_end
+    exit $?
+  }
   soft_reboot
-  exit 0
+  result_end
+  exit $?
 fi
 
 if [ "$ZYG_START" -lt "$OLD_AT" ] 2>/dev/null; then
   mark_pending_soft
 else
   rep art.soft_reboot ok live live
-  rm -f "$M54_DIR/pending_soft"
+  rm -f "$M54_DIR/pending_soft" || rep art.pending fail remove absent
 fi
 
-{ echo "$OLD_SIG"; echo "at=$OLD_AT"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600
+{ echo "$OLD_SIG"; echo "at=$OLD_AT"; echo "boot=$BOOT_NOW"; } | atomic_write "$STATE" 0600 || rep art.state fail write live
 result_end
+rc=$?
 log "art applied usap=$USAP dex2oat_little=$DEXCPU heap=$HEAP need_soft=$NEED soft_done=$DO_SOFT"
+exit "$rc"

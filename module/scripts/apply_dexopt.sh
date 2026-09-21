@@ -18,7 +18,7 @@ games=$(read_cfg games "")
 if [ -z "$games" ]; then
   rep dexopt skip - -
   result_end
-  exit 0
+  exit $?
 fi
 
 IFS=,
@@ -42,3 +42,4 @@ for g in $games; do
 done
 unset IFS
 result_end
+exit $?

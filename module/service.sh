@@ -7,25 +7,49 @@ MODDIR=${0%/*}
 
 SESSION=/dev/.m54tuner_session
 BOOT_LOCK=/dev/.m54tuner_boot_lock
+ensure_daemons() {
+  sh "$MODDIR/scripts/adaptive_start.sh" || return 1
+  if [ "$(read_cfg protect_games 0)" = 1 ]; then
+    if ! pid_record_alive "$M54_DIR/keepalive_pid" keepalive.sh; then
+      rm -f "$M54_DIR/keepalive_pid"
+      nohup sh "$MODDIR/scripts/keepalive.sh" </dev/null >/dev/null 2>&1 &
+      i=0
+      while [ "$i" -lt 20 ] && ! pid_record_alive "$M54_DIR/keepalive_pid" keepalive.sh; do
+        sleep 1; i=$((i + 1))
+      done
+    fi
+    pid_record_alive "$M54_DIR/keepalive_pid" keepalive.sh || return 1
+  fi
+}
 if [ -e "$SESSION" ]; then
-  sh "$MODDIR/scripts/adaptive_start.sh"
-  exit 0
+  ensure_daemons
+  exit $?
 fi
 
 if ! mkdir "$BOOT_LOCK" 2>/dev/null; then
   i=0
   while [ "$i" -lt 30 ] && [ ! -e "$SESSION" ]; do sleep 1; i=$((i + 1)); done
-  [ -e "$SESSION" ] && exit 0
+  [ -e "$SESSION" ] && { ensure_daemons; exit $?; }
   # A killed service must not make the boot sequence impossible for the rest of this boot.
   if ! pid_record_alive "$BOOT_LOCK/owner" service.sh; then
     rm -rf "$BOOT_LOCK"
     mkdir "$BOOT_LOCK" 2>/dev/null || exit 1
   else
-    exit 0
+    # Another live owner still holds the boot transaction. Timing out is not success: the caller
+    # has no evidence that owner completed, and must be allowed to retry.
+    exit 1
   fi
 fi
-pid_record_write "$BOOT_LOCK/owner" service.sh
-trap 'rm -rf "$BOOT_LOCK"' EXIT INT TERM
+pid_record_write "$BOOT_LOCK/owner" service.sh || { rmdir "$BOOT_LOCK" 2>/dev/null; exit 1; }
+# Only remove what we still own: a racer that reclaimed the lock after us must not
+# lose it when we exit, and we must not drop a lock we already lost.
+boot_unlock() {
+  local owner ostart
+  owner=$(pid_record_pid "$BOOT_LOCK/owner" 2>/dev/null)
+  ostart=$(grep '^start=' "$BOOT_LOCK/owner" 2>/dev/null | cut -d= -f2)
+  if [ "$owner" = "$$" ] && [ "$ostart" = "$(proc_start_s $$)" ]; then rm -rf "$BOOT_LOCK"; fi
+}
+trap 'boot_unlock' EXIT INT TERM
 [ -e "$SESSION" ] && exit 0
 
 if [ "${M54_BOOT_READY:-}" != 1 ]; then
@@ -40,11 +64,23 @@ export M54_RESULT_APPEND=1
 log "=== boot sequence ==="
 
 # Late load/temp-root records pending renderer changes; compositor restart stays explicit.
-sh "$MODDIR/scripts/apply_render.sh"
-sh "$MODDIR/scripts/apply_art.sh"
-sh "$MODDIR/scripts/apply_mem.sh"
-sh "$MODDIR/scripts/apply_profile.sh"
+# The completion marker is earned, not assumed: every apply is counted, and a boot where
+# anything failed leaves no SESSION so the next trigger (follower service.sh, or the first
+# app launch, which replays this same sequence) retries instead of skipping this boot.
+fail=0
+sh "$MODDIR/scripts/apply_render.sh" || fail=1
+sh "$MODDIR/scripts/apply_art.sh" || fail=1
+sh "$MODDIR/scripts/apply_mem.sh" || fail=1
+sh "$MODDIR/scripts/apply_profile.sh" || fail=1
 
-touch "$SESSION"
-chmod 0600 "$SESSION" 2>/dev/null
-log "=== boot sequence done ==="
+if [ "$fail" = 0 ] && ensure_daemons; then
+  if ! touch "$SESSION" || ! chmod 0600 "$SESSION"; then
+    rm -f "$SESSION"
+    log "=== boot sequence INCOMPLETE (session marker write failed) ==="
+    exit 1
+  fi
+  log "=== boot sequence done ==="
+else
+  log "=== boot sequence INCOMPLETE (see FAIL lines above) ==="
+  exit 1
+fi

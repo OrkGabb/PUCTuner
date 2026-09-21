@@ -12,8 +12,8 @@ android {
         applicationId = "com.orkgabb.m54tuner"
         minSdk = 33
         targetSdk = 36
-        versionCode = 13
-        versionName = "1.7.0"
+        versionCode = 14
+        versionName = "0.12.0"
     }
 
     buildTypes {
@@ -65,6 +65,8 @@ dependencies {
 
     val libsuVersion = "6.0.0"
     implementation("com.github.topjohnwu.libsu:core:$libsuVersion")
+
+    testImplementation("junit:junit:4.13.2")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
 }

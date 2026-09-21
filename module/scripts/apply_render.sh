@@ -42,7 +42,6 @@ done
 #   * debug.sf.latch_unsignaled already ships true, so there was nothing to gain by touching it.
 RENDERER=$(read_cfg hwui_renderer skiagl)       # skiagl|skiavk
 RE_BACKEND=$(read_cfg re_backend skiaglthreaded)  # skiaglthreaded|skiavkthreaded
-FPS=$(read_cfg fps_unlock 0)
 APPS=$(read_cfg render_apps "")
 SUI=$(read_cfg restart_systemui 0)
 
@@ -57,7 +56,7 @@ trap 'end_apply_lock' EXIT INT TERM
 
 # Signature of everything that lands in a process at start; scope is derived from what changed.
 SIG_APPS="$RENDERER"
-SIG_SF="$RE_BACKEND|$FPS"
+SIG_SF="$RE_BACKEND"
 OLD_APPS=$(grep -E '^apps=' "$STATE" 2>/dev/null | cut -d= -f2-)
 OLD_SF=$(grep -E '^sf=' "$STATE" 2>/dev/null | cut -d= -f2-)
 # When (seconds since boot) the current SF-tier props were written, plus the boot they belong to.
@@ -74,6 +73,24 @@ sf_live_backend() {
     *)        echo "" ;;
   esac
 }
+
+sf_drift() {
+  [ "$(getprop debug.renderengine.backend)" = "$RE_BACKEND" ] || return 0
+  [ "$(sf_live_backend)" = "$RE_BACKEND" ] || return 0
+  return 1
+}
+
+SF_DRIFT=0
+sf_drift && SF_DRIFT=1
+
+# v0.11 stored the retired FPS experiment in the SF signature. It never described the running
+# RenderEngine, so accept an old backend|fps record when dumpsys proves that backend is already
+# live. This clears the old timestamp/pending latch without restarting a healthy SurfaceFlinger.
+case "$OLD_SF" in
+  "$RE_BACKEND|"*)
+    if [ "$(sf_live_backend)" = "$RE_BACKEND" ]; then OLD_SF="$SIG_SF"; OLD_AT=0; fi
+    ;;
+esac
 
 if [ "$OLD_BOOT" != "$BOOT_NOW" ]; then
   # No usable record for this boot (previous boot, or the module was just updated). Normally that
@@ -95,21 +112,27 @@ apply_prop render.hwui_renderer debug.hwui.renderer "$RENDERER"
 # ---------------- SurfaceFlinger tier ----------------
 apply_prop render.re_backend debug.renderengine.backend "$RE_BACKEND"
 
-# The 120fps unlock is a TRIO, not one prop. Probed on this firmware:
-#   ro.surface_flinger.game_default_frame_rate_override = 60     (the cap)
-#   ro.surface_flinger.enable_frame_rate_override       = false  (override machinery off)
-#   debug.graphics.game_default_frame_rate.disabled     = true   (whole feature disabled)
-# With the feature disabled the override prop is inert — setting only it, as v1 did, changes
-# nothing. The three move together. NOTE: with `disabled` true, AOSP is not what caps games here,
-# so if a game is still stuck at 60 the limiter is Samsung's Game Booster/GOS, not this.
-if [ "$FPS" = "1" ]; then
-  apply_prop_managed render.fps_override ro.surface_flinger.game_default_frame_rate_override 120
-  apply_prop_managed render.fps_enable   ro.surface_flinger.enable_frame_rate_override true
-  apply_prop_managed render.fps_feature  debug.graphics.game_default_frame_rate.disabled false
-else
-  apply_prop_managed render.fps_override ro.surface_flinger.game_default_frame_rate_override ""
-  apply_prop_managed render.fps_enable   ro.surface_flinger.enable_frame_rate_override ""
-  apply_prop_managed render.fps_feature  debug.graphics.game_default_frame_rate.disabled ""
+# `fps_unlock` is retired: this only restores the three experimental props to their captured
+# factory values once. The config key remains an inert tombstone for old identity migration.
+FPS_RETIRED="$M54_DIR/fps_unlock_retired_v012"
+if [ ! -e "$FPS_RETIRED" ]; then
+  FPS_RETIRE_FAILED=0
+  apply_prop_managed render.fps_retire_override ro.surface_flinger.game_default_frame_rate_override "" || FPS_RETIRE_FAILED=1
+  apply_prop_managed render.fps_retire_enable   ro.surface_flinger.enable_frame_rate_override "" || FPS_RETIRE_FAILED=1
+  apply_prop_managed render.fps_retire_feature  debug.graphics.game_default_frame_rate.disabled "" || FPS_RETIRE_FAILED=1
+  if [ "$FPS_RETIRE_FAILED" = 0 ] && : > "$FPS_RETIRED"; then
+    rep render.fps_retired ok factory factory
+  else
+    rep render.fps_retired fail restore factory
+  fi
+fi
+
+# A scope record is evidence about values that actually landed. Never advance it after a rejected
+# property write: doing so suppresses the retry and turns live drift into a false "already applied".
+if [ "$M54_RESULT_FAILED" != 0 ] || [ "$M54_RESULT_IO_FAILED" != 0 ]; then
+  rep render.scope fail write-failed unchanged
+  result_end
+  exit $?
 fi
 
 # ---------------- scope resolution ----------------
@@ -117,17 +140,19 @@ NEED_APPS=0
 NEED_SF=0
 [ "$SIG_APPS" != "$OLD_APPS" ] && NEED_APPS=1
 [ "$SIG_SF" != "$OLD_SF" ] && NEED_SF=1
+[ "$SF_DRIFT" = 1 ] && NEED_SF=1
 [ "$FORCE" = "1" ] && { NEED_APPS=1; NEED_SF=1; }
 
 if [ "$BOOT" = "1" ]; then
   # Real boot: the props land before anything reads them, so no instance predates them.
   rep render.scope ok boot boot
-  rm -f "$M54_DIR/pending_sf"
+  rm -f "$M54_DIR/pending_sf" || rep render.pending fail remove absent
   { echo "apps=$SIG_APPS"; echo "sf=$SIG_SF"; echo "sf_at=0"; echo "boot=$BOOT_NOW"; } |
-    atomic_write "$STATE" 0600
+    atomic_write "$STATE" 0600 || rep render.state fail write boot
   result_end
+  rc=$?
   log "render applied at boot (no restarts needed)"
-  exit 0
+  exit "$rc"
 fi
 
 if [ "$NEED_APPS" = "1" ]; then
@@ -137,11 +162,23 @@ if [ "$NEED_APPS" = "1" ]; then
   # with a runtime restart, but every app closed). Two guards: never do it in the same pass as an SF
   # restart — SF coming back redraws the shell anyway — and never more than once a minute.
   if [ "$SUI" = "1" ] && [ "$NEED_SF" != "1" ] && [ ! -e /data/adb/m54tuner/.sui_cooldown ]; then
-    pkill -f com.android.systemui >/dev/null 2>&1
-    : > /data/adb/m54tuner/.sui_cooldown
-    (sleep 60; rm -f /data/adb/m54tuner/.sui_cooldown) >/dev/null 2>&1 &
-    rep render.restart_systemui ok done done
-    log "systemui restarted"
+    before=$(first_pid com.android.systemui)
+    if pkill -f com.android.systemui >/dev/null 2>&1; then
+      i=0; after=0
+      while [ "$i" -lt 10 ]; do
+        sleep 1; after=$(first_pid com.android.systemui)
+        [ "$after" -gt 0 ] 2>/dev/null && [ "$after" != "$before" ] && break
+        i=$((i + 1))
+      done
+    fi
+    if [ "$after" -gt 0 ] 2>/dev/null && [ "$after" != "$before" ] &&
+       : > /data/adb/m54tuner/.sui_cooldown; then
+      (sleep 60; rm -f /data/adb/m54tuner/.sui_cooldown) >/dev/null 2>&1 &
+      rep render.restart_systemui ok "$after" "$before"
+      log "systemui restarted"
+    else
+      rep render.restart_systemui fail "$after" "$before"
+    fi
   elif [ "$SUI" = "1" ]; then
     rep render.restart_systemui skip guarded guarded
   fi
@@ -154,25 +191,42 @@ fi
 # it directly, so the flag clears no matter who restarted SF — us, a reboot, a runtime restart, or
 # the user's own soft reboot. Keying it on a stored signature instead is what left the banner up
 # forever after SF had already picked the props up.
-if [ "$SIG_SF" != "$OLD_SF" ]; then
+if [ "$SIG_SF" != "$OLD_SF" ] || [ "$SF_DRIFT" = 1 ]; then
   OLD_SF="$SIG_SF"
   OLD_AT=$(uptime_s)                 # written now; any SF older than this has not seen it
 fi
 
 SF_START=$(proc_start_s "$(first_pid surfaceflinger)")
+SF_RESTARTED=0
 if [ "$DO_SF" = "1" ] && [ "$SF_START" -lt "$OLD_AT" ] 2>/dev/null; then
   restart_sf
+  SF_RESTARTED=1
   SF_START=$(proc_start_s "$(first_pid surfaceflinger)")
 fi
 
+# On this Samsung build, ctl.restart may first publish a new SurfaceFlinger PID and only then turn
+# into a broader Android-runtime restart. That delayed restart can reassert properties after an
+# immediate readback looked correct. Do not write a successful terminal record inside that race.
+[ "$SF_RESTARTED" = 1 ] && sleep 12
+
+POST_SF_DRIFT=0
+sf_drift && POST_SF_DRIFT=1
 if [ "$SF_START" -lt "$OLD_AT" ] 2>/dev/null; then
   mark_pending_sf
+elif [ "$POST_SF_DRIFT" = 1 ]; then
+  # A Samsung runtime restart can accompany ctl.restart surfaceflinger and reassert properties
+  # after the new PID appears. A PID change alone is therefore not proof that the requested state
+  # became live. Keep recovery actionable and make the caller see a failed apply.
+  mark_pending_sf
+  rep render.sf_verify fail drift "$SIG_SF"
 else
   rep render.sf_restart ok live live
-  rm -f "$M54_DIR/pending_sf"
+  rm -f "$M54_DIR/pending_sf" || rep render.pending fail remove absent
 fi
 
 { echo "apps=$SIG_APPS"; echo "sf=$OLD_SF"; echo "sf_at=$OLD_AT"; echo "boot=$BOOT_NOW"; } |
-  atomic_write "$STATE" 0600
+  atomic_write "$STATE" 0600 || rep render.state fail write live
 result_end
+rc=$?
 log "render applied renderer=$RENDERER re=$RE_BACKEND scope_apps=$NEED_APPS scope_sf=$NEED_SF sf_done=$DO_SF"
+exit "$rc"

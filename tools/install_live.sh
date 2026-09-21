@@ -12,6 +12,8 @@ fi
 mkdir -p "$MODDIR" "$DATA"
 chmod 0700 "$DATA"
 unzip -oq /data/local/tmp/m54tuner-module.zip -d "$MODDIR"
+# unzip updates files but never deletes payloads removed from a newer release.
+rm -rf "$MODDIR/fas"
 chmod 0755 "$MODDIR" "$MODDIR"/*.sh "$MODDIR/scripts" "$MODDIR/scripts"/*.sh "$MODDIR/bin" "$MODDIR/bin/m54-adaptive"
 if [ ! -f "$DATA/config" ]; then
   cat > "$DATA/config" <<'CFG'
@@ -24,7 +26,6 @@ thermal=moderate
 thermal_guard=1
 gos=untouched
 auto_game=0
-game_ram_clear=0
 CFG
   algo=$(cat /sys/block/zram0/comp_algorithm | tr ' ' '\n' | grep '^\[' | tr -d '[]')
   echo "zram_algo=$algo" >> "$DATA/config"

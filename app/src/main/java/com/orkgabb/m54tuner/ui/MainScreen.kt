@@ -830,7 +830,7 @@ private fun LazyListScope.renderTab(state: MainUiState, vm: MainViewModel) {
             RenderAccent,
         ) {
             InfoRow("HWUI (renderer)", "força parada dos apps escolhidos")
-            InfoRow("RenderEngine / 120fps", "reinicia o SurfaceFlinger (tela pisca)")
+            InfoRow("RenderEngine", "reinicia o SurfaceFlinger (tela pisca)")
             InfoRow("Perfil, GPU, I/O, térmico", "nada reinicia")
         }
     }
@@ -887,19 +887,8 @@ private fun LazyListScope.renderTab(state: MainUiState, vm: MainViewModel) {
                 DangerAccent,
             )
             Spacer(Modifier.height(8.dp))
-            SwitchRow(
-                "Destravar 120fps em jogos",
-                "Remove o teto de 60 do Game Booster no painel de 120 Hz.",
-                cfg.fpsUnlock, on && !busy, RenderAccent, badge = CONTEXT_BADGE,
-            ) { vm.toggleFps(it) }
-            Spacer(Modifier.height(8.dp))
             InfoRow("debug.hwui.renderer", state.device.props["hwui_renderer"].orEmpty().ifEmpty { "—" })
             InfoRow("debug.renderengine.backend", state.device.props["re_backend"].orEmpty().ifEmpty { "—" })
-            InfoRow("frame_rate_override", state.device.props["fps_override"].orEmpty().ifEmpty { "—" })
-            InfoRow(
-                "game_frame_rate.disabled",
-                state.device.props["fps_feature_disabled"].orEmpty().ifEmpty { "—" },
-            )
             InfoRow("RenderEngine ativo agora", state.device.props["re_live"].orEmpty().ifEmpty { "—" })
         }
     }
@@ -1042,12 +1031,11 @@ private fun LazyListScope.appsTab(state: MainUiState, vm: MainViewModel) {
                 protectOn,
             ) { vm.openPicker(Picker.PROTECT_APPS) }
             Spacer(Modifier.height(14.dp))
-            FeatureSwitch(
-                "Limpar RAM ao ativar o Game",
-                gain = "Fecha apps em segundo plano ao ativar o Game, mantendo o cache em disco.",
-                cost = "Apps fechados precisarão reiniciar do zero.",
-                cfg.gameRamClear, protectOn, DangerAccent, badge = "opcional",
-            ) { vm.setGameRamClear(it) }
+            // The "clear RAM on Game" auto-toggle was retired here: static profiles are gone, so
+            // the profile-gated automatic clear could never fire and the switch promised a clear
+            // that never came. "Limpar agora" below is the real one-shot; the engine's own opt-in
+            // trim (adaptive_ram_management) is the other. No auto-clear toggle is offered because
+            // none exists to offer.
             Spacer(Modifier.height(10.dp))
             // "Ativar Game automaticamente" was removed here. It matched the foreground package
             // against this list and rewrote the profile — a hand-written answer to a question the
@@ -1316,11 +1304,6 @@ private fun Dialogs(state: MainUiState, vm: MainViewModel) {
             "Desativa o throttling térmico de CPU e GPU. O aparelho esquentará mais sob carga alta.\n\n" + CONTEXT_NOTICE,
             "Ativar",
         )
-        Dialog.FPS -> Triple(
-            "Destravar 120fps",
-            "Reinicia o SurfaceFlinger (a tela piscará). Afeta jogos com suporte a 120 Hz.\n\n" + CONTEXT_NOTICE,
-            "Ativar",
-        )
         Dialog.RE_BACKEND -> Triple(
             "Backend do RenderEngine",
             "Alternar o backend exige reiniciar o SurfaceFlinger (a tela pisca). O backend Vulkan é experimental no driver Mali.",
@@ -1350,11 +1333,6 @@ private fun Dialogs(state: MainUiState, vm: MainViewModel) {
             "Reverter a compilação",
             "Restaura a compilação padrão (speed-profile) dos jogos selecionados.",
             "Reverter",
-        )
-        Dialog.GAME_RAM_CLEAR -> Triple(
-            "Limpar RAM ao ativar o Game",
-            "Fecha apps em segundo plano para liberar memória ao aplicar o perfil Game.",
-            "Ativar",
         )
         Dialog.LEARNING_CONTEXT -> Triple("Alterar contexto de aprendizado?", CONTEXT_NOTICE, "Aplicar alteração")
         Dialog.NONE -> Triple("", "", "")

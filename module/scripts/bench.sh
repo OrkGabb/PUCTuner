@@ -32,6 +32,7 @@ ROUNDS=${2:-2}
 MIN_FRAMES=${3:-400}
 CSV="$M54_DIR/bench.csv"
 STATE="$M54_DIR/bench_state"
+ACK="$M54_DIR/bench_restore_ok"
 
 # Only the main script may restore. Learned the hard way: `pkill -f bench.sh` matches the subshells
 # too, one of them ran this trap, put the config back and deleted the backup — and the surviving
@@ -40,15 +41,22 @@ STATE="$M54_DIR/bench_state"
 MAIN_PID=$$
 if pid_record_alive "$M54_DIR/bench_pid" bench.sh; then echo "benchmark already running"; exit 1; fi
 rm -f "$M54_DIR/bench_pid"
-pid_record_write "$M54_DIR/bench_pid" bench.sh
+rm -f "$ACK"
+pid_record_write "$M54_DIR/bench_pid" bench.sh || { echo "benchmark PID publication failed"; exit 1; }
 
 cleanup() {
   [ "$$" = "$MAIN_PID" ] || return 0
-  sh "$DIR/apply_profile.sh" >/dev/null 2>&1
-  dumpsys SurfaceFlinger --timestats -disable >/dev/null 2>&1
-  rm -f "$M54_DIR/bench_pid"
-  sh "$DIR/adaptive_start.sh"
-  echo "done" > "$STATE"
+  local rc=0
+  sh "$DIR/apply_profile.sh" >/dev/null 2>&1 || rc=1
+  dumpsys SurfaceFlinger --timestats -disable >/dev/null 2>&1 || rc=1
+  if [ "$rc" = 0 ]; then
+    rm -f "$M54_DIR/bench_pid"
+    if sh "$DIR/adaptive_start.sh" >/dev/null 2>&1; then touch "$ACK" || rc=1
+    else rc=1; fi
+  fi
+  if [ "$rc" = 0 ]; then echo "done" > "$STATE"
+  else echo "restore_failed" > "$STATE"; fi
+  return "$rc"
 }
 trap cleanup EXIT INT TERM
 
@@ -72,7 +80,7 @@ stutters() {
 # step_run <round> <phase> <dvfs> <polling> <js>
 step_run() {
   local round="$1" phase="$2" dvfs="$3" pol="$4" js="$5"
-  M54_BENCH_DVFS="$dvfs" M54_BENCH_POLLING="$pol" M54_BENCH_JS="$js" M54_SKIP_RAM_CLEAR=1 \
+  M54_BENCH_DVFS="$dvfs" M54_BENCH_POLLING="$pol" M54_BENCH_JS="$js" \
     sh "$DIR/apply_profile.sh" >/dev/null 2>&1
 
   dumpsys SurfaceFlinger --timestats -clear  >/dev/null 2>&1
