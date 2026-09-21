@@ -471,9 +471,15 @@ private fun LazyListScope.profileTab(state: MainUiState, vm: MainViewModel) {
                 )
             }
             InfoRow("Amostras reais aceitas", ai["samples"] ?: "0")
-            val confidence = ai["confidence"]?.toDoubleOrNull() ?: 0.0
-            InfoRow("Confiança do avaliador", "${(confidence * 100).toInt()}%")
-            ProgressBar(confidence.toFloat(), BalancedAccent)
+            // Share of the realised return the critic's predictions explain over the last ~20 min
+            // of this run; -1 until enough windows have been scored. Not an update counter.
+            val accuracy = ai["confidence"]?.toDoubleOrNull() ?: -1.0
+            if (accuracy < 0) {
+                InfoRow("Acerto do avaliador", "Medindo · ${ai["confidence_windows"] ?: "0"}/50")
+            } else {
+                InfoRow("Acerto do avaliador", "${(accuracy * 100).toInt()}%")
+                ProgressBar(accuracy.toFloat(), BalancedAccent)
+            }
             InfoRow("Contextos medidos", "${ai["contexts"] ?: "0"} · ${ai["policies"] ?: "0"} políticas")
             InfoRow("Mudanças de resposta detectadas", ai["model_surprises"] ?: "0")
             val budget = ai["budget"]?.toDoubleOrNull() ?: 1.0

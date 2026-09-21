@@ -1,4 +1,5 @@
 #include "../module/engine/platform.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <limits>
@@ -497,6 +498,52 @@ int main() {
         double drift = 0;
         for (size_t i = 0; i < Critic::Dim; ++i) drift = std::max(drift, std::abs(snapshot[i] - brain.critic.weights[0][i]));
         assert(drift < .05);
+    }
+
+    // ---- accuracy: says how well the critic predicts, not how often it was updated ------------
+    // Two critics get the same number of updates, so trust() reads the same for both. One sees a
+    // world it can predict (a scene that lasts ~100 windows), the other windows whose cost is a coin flip
+    // behind identical features. Only the accuracy may tell them apart.
+    {
+        auto goodFeatures = features(good, c, Action{});
+        auto badFeatures = features(s, c, Action{});
+        auto goodCosts = costs(good, c, Action{}), badCosts = costs(s, c, Action{});
+        auto linear = [&c](const CostVector& k) {
+            double r = 1;
+            for (int i = 0; i < Costs; ++i) r -= 2 * preference(c.tier)[i] * std::clamp(k[i], 0., 4.);
+            return r;
+        };
+        uint64_t seed = 12345;
+        auto uniform = [&seed] { seed = seed * 6364136223846793005ULL + 1442695040888963407ULL;
+                                 return double(seed >> 11) / double(1ULL << 53); };
+        Critic sticky, noisy;
+        Accuracy stickyAcc, noisyAcc;
+        assert(stickyAcc.value() == -1);          // nothing measured is not "0% right"
+        bool inGood = true;
+        const int windows = 6000;
+        for (int i = 0; i < windows; ++i) {
+            const bool nextGood = uniform() < .99 ? inGood : !inGood;   // a scene lasts ~100 windows
+            const auto& from = inGood ? goodFeatures : badFeatures;
+            const auto& to = nextGood ? goodFeatures : badFeatures;
+            const auto& paid = nextGood ? goodCosts : badCosts;
+            double predicted = sticky.value(from, c.tier);
+            sticky.learn(from, paid, to, c.tier);
+            stickyAcc.observe(predicted, linear(paid), Discount, sticky.value(to, c.tier), true);
+            inGood = nextGood;
+
+            const auto& coin = uniform() < .5 ? goodCosts : badCosts;
+            predicted = noisy.value(goodFeatures, c.tier);
+            noisy.learn(goodFeatures, coin, goodFeatures, c.tier);
+            noisyAcc.observe(predicted, linear(coin), Discount, noisy.value(goodFeatures, c.tier), true);
+        }
+        assert(sticky.trust() > .9 && noisy.trust() > .9);   // the old reading: both "confident"
+        assert(stickyAcc.value() > .5);      // .71-.87 over ten seeds
+        assert(noisyAcc.value() < .1);       // 0.000 over the same seeds
+        assert(stickyAcc.count() == uint32_t(windows - Accuracy::Lookahead + 1));
+        // A broken chain scores nothing it cannot complete.
+        Accuracy broken;
+        for (int i = 0; i < 100; ++i) broken.observe(1, 1, Discount, 1, i % 10 != 0);
+        assert(broken.count() == 0);
     }
 
     // ---- the same critic, a scenario with no game in it --------------------------------------
@@ -1364,6 +1411,7 @@ int main() {
         assert(std::abs(recovered.model.predict(after, seen, {}, up).p95 - learned) < 1);
         // Nothing stored is a first boot, not a rejection.
         assert(loadBrain(store, "new-firmware", rehome, booted).empty());
+
     }
     {
         // Generations shift instead of overwriting a single `.1`.

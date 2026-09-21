@@ -228,6 +228,40 @@ public:
                  Tier tier, double rate = 1, double step = Discount);
 };
 
+// How well the critic predicts, as opposed to how much it has been updated. trust() is
+// updates/(updates+200): past 99% at twenty thousand windows whether the predictions are right
+// or not.
+//
+// This compares V(s) with the return that actually followed: the discounted real rewards of
+// the next Lookahead windows, plus the critic's own value only for what lies beyond them
+// (Discount^20 = 0.08 of it). Scoring against the one-step TD target instead credits the critic
+// for predicting its own bootstrap term: a critic fed coin-flip costs behind identical features
+// read 57% "accurate" that way (tests/engine_test.cpp), because V wandered and the target
+// carried the wander. The score is the share of the realised return's variance the prediction
+// explains over roughly the last Horizon scores: 0 for a critic that only knows the mean,
+// 1 for one that anticipates everything. It is bounded by how predictable the use itself is,
+// not only by the critic. Runtime only, never persisted, so a brain file never carries a claim
+// about predictions it is not making right now.
+class Accuracy {
+public:
+    static constexpr int Lookahead = 20;     // windows, ~2 min; the horizon of the return
+    static constexpr double Horizon = 200;   // scores averaged, ~20 min of use
+    static constexpr double SpreadHorizon = 2000;  // what a return varies by, across sessions
+    static constexpr uint32_t Warmup = 50;   // below this the estimate is too noisy to show
+    // One learned pair: the critic's V(before) as it stood before learning, the reward the pair
+    // produced, the pair's discount, the critic's V(after), and whether `before` is the previous
+    // pair's `after`. A broken chain drops the returns still being accumulated.
+    void observe(double predicted, double reward, double discount, double valueAfter, bool chained);
+    double value() const;                    // in [0, 1]; -1 while warming up
+    uint32_t count() const { return n; }
+private:
+    struct Pending { double predicted, realised, discount; int steps; };
+    std::vector<Pending> pending;
+    double mean = 0, spread = 0, error = 0;
+    uint32_t n = 0;
+    void score(double predicted, double target);
+};
+
 // Softmax preference over relative moves: a tier-wide term plus a per-context correction,
 // mixed with a uniform floor so exploration never collapses onto a single move.
 class Prior {

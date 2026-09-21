@@ -209,6 +209,8 @@ int main(int argc, char** argv) {
     std::string gate = "warming_up";
     Ambition want;
     double lastError = 0, lastValue = 0;
+    Accuracy accuracy;   // how well the critic predicts real windows; see core.hpp
+    double lastPairEnd = -1;   // `at` of the last learned pair's second window
     uint64_t rejected = 0, passiveWindows = 0;
     int rehearsed = 0;
     double lastRamTrimAt = -100;
@@ -354,7 +356,16 @@ int main(int argc, char** argv) {
                 const double gain = reward(s, limits, current);
                 const auto after = features(s, limits, current);
                 const double step = std::pow(Discount, (s.at - before.at) / 6);
+                const double predicted = brain.critic.value(beforeFeatures, beforeTier);
                 lastError = brain.critic.learn(beforeFeatures, measured, after, beforeTier, 1, step);
+                // The reward V is a discounted sum of: V = ValueLimit - 2 w.psi with psi the
+                // discounted clipped costs, so r = 1 - 2 w.clip(c, 0, 4), not the clipped gain.
+                double linearReward = 1;
+                for (int i = 0; i < Costs; ++i)
+                    linearReward -= 2 * preference(beforeTier)[i] * std::clamp(measured[i], 0., 4.);
+                accuracy.observe(predicted, linearReward, step, brain.critic.value(after, beforeTier),
+                                 before.at == lastPairEnd);
+                lastPairEnd = s.at;
                 lastValue = brain.critic.value(beforeFeatures, beforeTier);
                 brain.replay.add(beforeFeatures, measured, after, beforeTier, step, planner.random());
                 ++brain.windows;
@@ -531,7 +542,8 @@ int main(int argc, char** argv) {
                << "\nreplay=" << brain.replay.samples.size() << "\nrehearsed=" << rehearsed
                << "\nsimulations=" << decision.simulations << "\ndepth=" << decision.depth
                << "\nplan_value=" << decision.value << "\nstate_value=" << lastValue
-               << "\ntd_error=" << lastError << "\nconfidence=" << brain.critic.trust()
+               << "\ntd_error=" << lastError << "\nconfidence=" << accuracy.value()
+               << "\nconfidence_windows=" << accuracy.count() << "\ncritic_updates=" << brain.critic.updates
                << "\nbudget=" << allowance.remaining() << "\nceiling=" << limits.ceiling
                // The probe's own state belongs here: a silent failure leaving these at zero is
                // otherwise indistinguishable from a device with no scheduling delay at all.

@@ -361,6 +361,40 @@ double Critic::value(const Observation& s, const Constraints& c, Action applied)
     return value(features(s, c, applied), c.tier);
 }
 double Critic::trust() const { return updates / (updates + 200.); }
+
+void Accuracy::observe(double predicted, double reward, double discount, double valueAfter,
+                       bool chained) {
+    if (!std::isfinite(predicted) || !std::isfinite(reward) || !std::isfinite(discount) ||
+        !std::isfinite(valueAfter)) { pending.clear(); return; }
+    if (!chained) pending.clear();
+    pending.push_back({predicted, 0, 1, 0});
+    for (auto& p : pending) {
+        p.realised += p.discount * reward;
+        p.discount *= clip(discount, 0, 1);
+        ++p.steps;
+    }
+    while (!pending.empty() && pending.front().steps >= Lookahead) {
+        const auto& p = pending.front();
+        score(p.predicted, p.realised + p.discount * valueAfter);
+        pending.erase(pending.begin());
+    }
+}
+void Accuracy::score(double predicted, double target) {
+    if (n < 1000000000U) ++n;
+    // A plain average until Horizon windows exist, then an exponential one: the early estimate
+    // is not dragged towards the zero it started from.
+    const double a = std::max(1. / Horizon, 1. / n), b = std::max(1. / SpreadHorizon, 1. / n);
+    const double d = target - mean;
+    mean += b * d;
+    spread = (1 - b) * (spread + b * d * d);
+    error = (1 - a) * error + a * (target - predicted) * (target - predicted);
+}
+double Accuracy::value() const {
+    if (n < Warmup) return -1;
+    // Floor the variance: an idle stretch has an almost constant target, and dividing by its
+    // near-zero spread would turn rounding noise into a verdict.
+    return clip(1 - error / std::max(spread, 1e-4), 0, 1);
+}
 double Critic::learn(const Features& before, const CostVector& measured, const Features& after,
                      Tier tier, double rate, double step) {
     for (double x : measured) if (!std::isfinite(x)) return 0;
