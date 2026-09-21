@@ -116,6 +116,7 @@ Unlike generic Snapdragon platforms, the Exynos architecture features specific l
   * Kernel enforces a physical QoS ceiling at **2093 MHz**. Attempting to write higher clocks is discarded by the hardware driver. PUCTuner respects this ceiling and manipulates the **floor**, ensuring necessary DRAM bandwidth without false claims.
 * **Samsung MARs / Chimera Killer Exemption (opt-in, off by default):**
   * When `samsung_protect=1`, PUCTuner adds the listed packages to the official system `MARs_ExcludeTarget` table — the same list Device Care writes — without modifying framework binaries. "Bypass" would overstate it: it is a per-app exemption using the system's own mechanism. Inserts and removals are queried back; provider errors are failures rather than evidence of absence.
+* **Uninstall:** kernel, sysfs and property changes vanish on the next reboot, but MARs exemptions, SPCM, Samsung settings and GOS do not. Magisk and KernelSU run `uninstall.sh` before the Android framework is up, when those settings cannot be written, so the restore waits for boot to complete, retries, and deletes `/data/adb/m54tuner` only after every value reads back as it was. If it never succeeds, the directory is kept; run `sh /data/adb/m54tuner/uninstall/uninstall_finish.sh` to retry.
 
 ---
 

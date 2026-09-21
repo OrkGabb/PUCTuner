@@ -1,25 +1,40 @@
 #!/system/bin/sh
 # Restore every persistent Android/Samsung setting owned by M54 Tuner. Ownership ledgers are
 # retained until every mutation is verified so a failed uninstall remains recoverable.
+#
+# Two phases, because uninstall runs them at different moments:
+#   stop      stop the daemons this module started; needs the module's own stop scripts, so it
+#             runs from uninstall.sh while the module directory still exists
+#   settings  MARs / SPCM / Samsung settings / GOS; needs `content`, `settings` and `pm`, so it
+#             runs only once the framework is up (uninstall_finish.sh waits for that)
+# No argument runs both.
 DIR=$(dirname "$0")
 . "$DIR/lib.sh"
+PHASE=${1:-all}
 
 EXCL=content://com.samsung.android.sm.mars/MARs_ExcludeTarget
 POL=content://com.samsung.android.sm.mars/MARs_Policy
 SET=content://com.samsung.android.sm/settings
 fail=0
 
-stop_if_present() {
-  [ -f "$M54_DIR/$1" ] || return 0
-  sh "$DIR/$2" >/dev/null 2>&1 || { log "restore: failed to stop $2"; fail=1; }
-}
-stop_if_present keepalive_pid keepalive_stop.sh
-stop_if_present bench_pid bench_stop.sh
-[ -f "$M54_DIR/bench_sched_pid" ] && sh "$DIR/bench_stop.sh" sched >/dev/null 2>&1 || {
-  [ -f "$M54_DIR/bench_sched_pid" ] && fail=1
-}
-stop_if_present session_watch_pid session_watch_stop.sh
-stop_if_present thermal_guard_pid thermal_guard_stop.sh
+if [ "$PHASE" != settings ]; then
+  stop_if_present() {
+    [ -f "$M54_DIR/$1" ] || return 0
+    sh "$DIR/$2" >/dev/null 2>&1 || { log "restore: failed to stop $2"; fail=1; }
+  }
+  stop_if_present keepalive_pid keepalive_stop.sh
+  stop_if_present bench_pid bench_stop.sh
+  [ -f "$M54_DIR/bench_sched_pid" ] && sh "$DIR/bench_stop.sh" sched >/dev/null 2>&1 || {
+    [ -f "$M54_DIR/bench_sched_pid" ] && fail=1
+  }
+  stop_if_present session_watch_pid session_watch_stop.sh
+  stop_if_present thermal_guard_pid thermal_guard_stop.sh
+fi
+if [ "$PHASE" = stop ]; then
+  [ "$fail" = 0 ] && exit 0
+  log "restore: daemon stop INCOMPLETE"
+  exit 1
+fi
 
 pkg_absent() {
   local out rc
