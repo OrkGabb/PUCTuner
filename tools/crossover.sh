@@ -7,7 +7,11 @@
 # the player happened to be doing is confounded with the arm.
 #
 # Alternating reduces that bias; it does not guarantee identical scenes or eliminate
-# carryover. Blocks run ABBA to balance linear time drift within each quad.
+# carryover. Blocks run ABBA to balance linear time drift within each quad, and the order flips
+# every quad (observe-active-active-observe, then active-observe-observe-active). With a fixed
+# order and a quad as long as one lap of a looped route, the active arm fell on the same part of
+# the route every time and scene and arm were confounded (2026-09-21, NTE). Pick a block length
+# that does not divide the lap.
 #
 #   crossover.sh [seconds_per_block] [quads]
 set -eu
@@ -42,10 +46,11 @@ record() {
 echo "# crossover period=${PERIOD}s quads=${QUADS} started=$(date +%T)" >> "$LOG"
 i=0
 while [ "$i" -lt "$QUADS" ]; do
-  set_mode observe; record observe
-  set_mode active;  record active
-  set_mode active;  record active
-  set_mode observe; record observe
+  if [ $((i % 2)) = 0 ]; then first=observe; second=active; else first=active; second=observe; fi
+  set_mode "$first";  record "$first"
+  set_mode "$second"; record "$second"
+  set_mode "$second"; record "$second"
+  set_mode "$first";  record "$first"
   i=$((i + 1))
   echo "# quad $i done $(date +%T)" >> "$LOG"
 done
