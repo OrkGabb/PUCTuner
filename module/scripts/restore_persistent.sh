@@ -82,12 +82,15 @@ if [ -f "$M54_DIR/samsung_backup" ]; then
       fail=1
       continue
     fi
+    # stdin inside this loop is the ledger, and `settings` is `cmd`, which hands its stdin to
+    # system_server over binder. SELinux refuses an adb_data_file fd there, so every call failed
+    # with "Failed transaction" and no key was ever restored (seen on the device, 2026-09-21).
     if [ "$value" = __ABSENT__ ]; then
-      settings delete "$table" "$key" >/dev/null 2>&1 || fail=1
-      [ "$(settings get "$table" "$key" 2>/dev/null)" = null ] || fail=1
+      settings delete "$table" "$key" </dev/null >/dev/null 2>&1 || fail=1
+      [ "$(settings get "$table" "$key" </dev/null 2>/dev/null)" = null ] || fail=1
     else
-      settings put "$table" "$key" "$value" >/dev/null 2>&1 || fail=1
-      [ "$(settings get "$table" "$key" 2>/dev/null)" = "$value" ] || fail=1
+      settings put "$table" "$key" "$value" </dev/null >/dev/null 2>&1 || fail=1
+      [ "$(settings get "$table" "$key" </dev/null 2>/dev/null)" = "$value" ] || fail=1
     fi
   done < "$M54_DIR/samsung_backup"
 fi
