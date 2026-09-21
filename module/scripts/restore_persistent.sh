@@ -71,8 +71,17 @@ fi
 
 if [ -f "$M54_DIR/samsung_backup" ]; then
   while IFS= read -r line; do
-    table=${line%%|*}; rest=${line#*|}; key=${rest%%=*}; value=${rest#*=}
-    [ -n "$table" ] && [ -n "$key" ] || continue
+    # The pipe is escaped on purpose. Unescaped, mksh reads `${line%%|*}` as the alternation
+    # "" | "*", so every table came out empty, every line was skipped, and this script logged
+    # "restored and verified" having restored nothing (seen on the device, 2026-09-21).
+    [ -n "$line" ] || continue
+    table=${line%%\|*}; rest=${line#*\|}; key=${rest%%=*}; value=${rest#*=}
+    # A ledger line that does not parse is a setting that cannot be restored, not one to skip.
+    if [ -z "$table" ] || [ -z "$key" ] || [ "$rest" = "$line" ]; then
+      log "restore: unparseable samsung_backup line: $line"
+      fail=1
+      continue
+    fi
     if [ "$value" = __ABSENT__ ]; then
       settings delete "$table" "$key" >/dev/null 2>&1 || fail=1
       [ "$(settings get "$table" "$key" 2>/dev/null)" = null ] || fail=1
