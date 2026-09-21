@@ -17,6 +17,12 @@ object ModuleBridge {
     private const val DATA_DIR = "/data/adb/m54tuner"
     const val CONFIG = "$DATA_DIR/config"
     private const val RESULT = "$DATA_DIR/result"
+    /**
+     * Failed boot sequences after which launches stop replaying it this boot. service.sh counts
+     * them in /dev; a failure that repeats identically would otherwise re-run the whole boot on
+     * every launch. Three covers a transient failure and its retry without making it a loop.
+     */
+    private const val BOOT_REPLAY_LIMIT = 3
 
     // Prefer the active temp-root mount. A staged update must not shadow a hot-installed module.
     private val MODULE_DIRS = listOf(
@@ -155,12 +161,16 @@ object ModuleBridge {
     /**
      * True exactly once per boot session (marker in /dev, a tmpfs that clears on reboot). With
      * temp-root the module never runs at boot, so the first app launch of a session is what
-     * restores everything; every later launch takes the cheap path.
+     * restores everything; every later launch takes the cheap path. A boot that has already
+     * failed [BOOT_REPLAY_LIMIT] times is not replayed again until the next reboot.
      */
     suspend fun consumeFirstOfSession(): String? {
         val token = UUID.randomUUID().toString().replace("-", "")
         val r = RootShellManager.run(
             "if [ -e /dev/.m54tuner_session ]; then exit 1; fi; " +
+                "f=\$(cat /dev/.m54tuner_boot_failures 2>/dev/null); " +
+                "case \$f in ''|*[!0-9]*) f=0;; esac; " +
+                "[ \$f -ge $BOOT_REPLAY_LIMIT ] && exit 1; " +
                 "now=\$(cut -d. -f1 /proc/uptime); " +
                 "old=\$(cat /dev/.m54tuner_app_claim/at 2>/dev/null); " +
                 "case \$old in ''|*[!0-9]*) old=0;; esac; " +

@@ -7,6 +7,17 @@ MODDIR=${0%/*}
 
 SESSION=/dev/.m54tuner_session
 BOOT_LOCK=/dev/.m54tuner_boot_lock
+# Failed boot sequences this boot. The app replays the sequence on launch while SESSION is
+# missing; a failure that repeats identically (a prop the firmware reasserts, a read-only node)
+# would otherwise re-run the whole boot on every launch, forever. The app stops replaying once
+# this count reaches its limit (ModuleBridge.consumeFirstOfSession); a manual apply still runs.
+BOOT_FAILURES=/dev/.m54tuner_boot_failures
+count_failure() {
+  local n
+  n=$(cat "$BOOT_FAILURES" 2>/dev/null)
+  case "$n" in ''|*[!0-9]*) n=0;; esac
+  echo $((n + 1)) > "$BOOT_FAILURES"
+}
 ensure_daemons() {
   sh "$MODDIR/scripts/adaptive_start.sh" || return 1
   if [ "$(read_cfg protect_games 0)" = 1 ]; then
@@ -77,10 +88,12 @@ if [ "$fail" = 0 ] && ensure_daemons; then
   if ! touch "$SESSION" || ! chmod 0600 "$SESSION"; then
     rm -f "$SESSION"
     log "=== boot sequence INCOMPLETE (session marker write failed) ==="
+    count_failure
     exit 1
   fi
   log "=== boot sequence done ==="
 else
   log "=== boot sequence INCOMPLETE (see FAIL lines above) ==="
+  count_failure
   exit 1
 fi
