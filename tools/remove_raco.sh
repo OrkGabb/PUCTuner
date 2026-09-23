@@ -5,7 +5,7 @@ PKG=com.kanagawa.yamada.project.raco
 am force-stop "$PKG" 2>/dev/null || true
 for proc in /proc/[0-9]*; do
   [ -r "$proc/cmdline" ] || continue
-  cmd=$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+  cmd=$(head -c 4096 "$proc/cmdline" 2>/dev/null | tr '\000' ' ') || continue
   case "$cmd" in
     *'/data/adb/modules/ProjectRaco/'*|*'/data/adb/modules_update/ProjectRaco/'*|*'/data/adb/ksu/modules/ProjectRaco/'*)
       pid=${proc##*/}
@@ -16,7 +16,7 @@ done
 sleep 2
 for proc in /proc/[0-9]*; do
   [ -r "$proc/cmdline" ] || continue
-  cmd=$(tr '\000' ' ' < "$proc/cmdline" 2>/dev/null) || continue
+  cmd=$(head -c 4096 "$proc/cmdline" 2>/dev/null | tr '\000' ' ') || continue
   case "$cmd" in *'/data/adb/modules/ProjectRaco/'*) kill -KILL "${proc##*/}" 2>/dev/null || true;; esac
 done
 if grep -q 'ProjectRaco/RSWAP' /proc/swaps; then

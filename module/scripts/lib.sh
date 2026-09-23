@@ -339,6 +339,16 @@ pid_record_write() {
 
 pid_record_pid() { grep '^pid=' "$1" 2>/dev/null | cut -d= -f2; }
 
+# proc_cmdline <pid> — the process's argv joined by spaces, empty when it is gone.
+#
+# Never point `tr` straight at /proc/PID/cmdline. When the process exits after the file was opened,
+# every read() fails, and toybox tr retries a failed read forever instead of giving up. Measured
+# live: a stop loop polled a daemon that was exiting on the SIGTERM it had just sent, and that tr
+# spun at 100% of a core for 13 hours (31e9 read calls). The stop script never returned, the
+# profile apply above it never finished, and the engine was never started again. `head` gives up on
+# the first failed read, so tr only ever sees a pipe.
+proc_cmdline() { head -c 4096 "/proc/$1/cmdline" 2>/dev/null | tr '\0' ' '; }
+
 pid_record_alive() {
   local file="$1" tag="$2" pid rec_boot rec_start live_start cmd
   [ -f "$file" ] || return 1
@@ -347,7 +357,7 @@ pid_record_alive() {
   rec_start=$(grep '^start=' "$file" 2>/dev/null | cut -d= -f2)
   [ "$rec_boot" = "$(boot_id)" ] || return 1
   live_start=$(proc_start_s "$pid"); [ "$live_start" != -1 ] && [ "$live_start" = "$rec_start" ] || return 1
-  cmd=$(tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null)
+  cmd=$(proc_cmdline "$pid")
   echo "$cmd" | grep -Fq "$tag"
 }
 

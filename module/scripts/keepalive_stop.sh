@@ -11,7 +11,7 @@ else
   # v2 migration: accept a legacy numeric PID only when its cmdline still proves ownership.
   PID=$(cat "$PIDF" 2>/dev/null)
   case "$PID" in ''|*[!0-9]*) rm -f "$PIDF"; echo "registro antigo removido"; exit 0;; esac
-  tr '\0' ' ' < "/proc/$PID/cmdline" 2>/dev/null | grep -Fq keepalive.sh || {
+  proc_cmdline "$PID" | grep -Fq keepalive.sh || {
     rm -f "$PIDF"; echo "registro obsoleto removido"; exit 0; }
 fi
 kill -TERM "$PID" 2>/dev/null || exit 1
