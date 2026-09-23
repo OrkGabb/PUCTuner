@@ -537,13 +537,49 @@ int main() {
             noisyAcc.observe(predicted, linear(coin), Discount, noisy.value(goodFeatures, c.tier), true);
         }
         assert(sticky.trust() > .9 && noisy.trust() > .9);   // the old reading: both "confident"
-        assert(stickyAcc.value() > .5);      // .71-.87 over ten seeds
-        assert(noisyAcc.value() < .1);       // 0.000 over the same seeds
+        assert(stickyAcc.state() == Accuracy::State::Scored && stickyAcc.value() > .5);  // .75-.94 over 40 seeds
+        // This coin moves the return by 0.08 -- inside the band this device's idle stretches
+        // occupy (0.017-0.070 over 200-window blocks), so the meter declines to judge it, exactly
+        // as it would the phone at rest. A small unpredictable wobble and steady use look the
+        // same from the return alone; that is the limit of FlatSpread, stated rather than hidden.
+        assert(noisyAcc.state() == Accuracy::State::Flat && noisyAcc.value() == -1);
         assert(stickyAcc.count() == uint32_t(windows - Accuracy::Lookahead + 1));
+        // The same coin at the amplitude real use has here (0.71-6.4): now there is plenty to
+        // explain and the critic explains none of it. Scored, and scored low -- a "flat" here
+        // would hide a useless critic behind -1.
+        {
+            auto harsh = badCosts;
+            harsh[LateCost] = 1; harsh[JankCost] = 1; harsh[PressureCost] = 1;
+            uint64_t coinSeed = 777;
+            auto coinFlip = [&coinSeed] { coinSeed = coinSeed * 6364136223846793005ULL + 1442695040888963407ULL;
+                                          return (coinSeed >> 11) & 1; };
+            Critic loud;
+            Accuracy loudAcc;
+            for (int i = 0; i < windows; ++i) {
+                const auto& coin = coinFlip() ? goodCosts : harsh;
+                const double predicted = loud.value(goodFeatures, c.tier);
+                loud.learn(goodFeatures, coin, goodFeatures, c.tier);
+                loudAcc.observe(predicted, linear(coin), Discount, loud.value(goodFeatures, c.tier), true);
+            }
+            assert(loudAcc.variation() > .71);
+            // 0.000 in 40 of 40 seeds; with the spread on a longer memory than the error it read
+            // >= .1 in 6 of them, up to .153.
+            assert(loudAcc.state() == Accuracy::State::Scored && loudAcc.value() < .1);
+        }
         // A broken chain scores nothing it cannot complete.
         Accuracy broken;
         for (int i = 0; i < 100; ++i) broken.observe(1, 1, Discount, 1, i % 10 != 0);
         assert(broken.count() == 0);
+        assert(broken.state() == Accuracy::State::Warming);
+        // Steady use, windows a little longer than 6 s, and a critic that is right about the
+        // costs. The constant stream is then worth less than ValueLimit, which is not a
+        // prediction the critic makes; nor does a return that never varies have anything to
+        // explain. Measured live: this read 0% at 185 scores.
+        Accuracy steady;
+        const double v = ValueLimit - 1.4, r = 1 - 1.4 * (1 - Discount);
+        for (int i = 0; i < 300; ++i) steady.observe(v, r, .874, v, true);
+        assert(steady.state() == Accuracy::State::Flat && steady.value() == -1);
+        assert(steady.variation() < 1e-9);
     }
 
     // ---- the same critic, a scenario with no game in it --------------------------------------

@@ -238,21 +238,47 @@ public:
 // for predicting its own bootstrap term: a critic fed coin-flip costs behind identical features
 // read 57% "accurate" that way (tests/engine_test.cpp), because V wandered and the target
 // carried the wander. The score is the share of the realised return's variance the prediction
-// explains over roughly the last Horizon scores: 0 for a critic that only knows the mean,
+// explains over roughly the last Horizon scores: 0 (or below, clipped) for a critic that only knows the mean,
 // 1 for one that anticipates everything. It is bounded by how predictable the use itself is,
 // not only by the critic. Runtime only, never persisted, so a brain file never carries a claim
 // about predictions it is not making right now.
+//
+// Only the part the critic learns is scored. V = ValueLimit - 2 w.psi hard-codes the value of
+// the reward's constant +1 as ValueLimit = 1/(1 - Discount), which holds for windows of exactly
+// 6 s. Measured windows run ~6.3 s (mean pair discount 0.874), so the realised constant stream is
+// worth 7.97-8.09, and every prediction read 0.24-0.36 high for a reason no weight can learn.
+// That offset was the whole of the critic's apparent optimism (the cost part's own bias was
+// -0.09) and, on a quiet run, its square alone exceeded the variance being explained. It moves
+// every action's value alike, so no decision depends on it; the timing of the sampler is not a
+// prediction. observe() takes the critic's V and the linear reward as they are and strips the
+// constant from both sides itself, so every caller scores the same quantity.
+//
+// A score also needs something to explain. Over 200-window blocks of this device's history the
+// realised cost return varied by 0.017-0.070 on idle stretches, every one scoring <= 0, and by
+// 0.71-6.4 in use, scoring ~0.48; nothing fell between. Below FlatSpread the use is too steady to
+// say how well anything predicts it, and the state says that instead of reporting 0%.
 class Accuracy {
 public:
     static constexpr int Lookahead = 20;     // windows, ~2 min; the horizon of the return
-    static constexpr double Horizon = 200;   // scores averaged, ~20 min of use
-    static constexpr double SpreadHorizon = 2000;  // what a return varies by, across sessions
+    // Error and spread are averaged with the SAME weights over the same scores. With the spread
+    // on a 2000-score memory and the error on 200, the two were estimated from different samples,
+    // and a critic that knew only the mean of a coin flip read up to 17% on sampling noise (>= 10%
+    // in 6 of 40 seeds). On shared weights its error is the spread plus its bias squared, so it
+    // cannot score above zero: 0.000 in 40 of 40. The memory is long because overlapping
+    // 20-window returns leave only ~Horizon/20 independent samples: at 200 the sticky critic read
+    // 0.20-0.94 across 40 seeds, at 1000 0.75-0.94, and 2000 bought nothing more. A quiet stretch
+    // is no longer judged against its own tiny variance by the long memory; State::Flat says it.
+    static constexpr double Horizon = 1000;  // scores averaged, ~1h45 of use
     static constexpr uint32_t Warmup = 50;   // below this the estimate is too noisy to show
-    // One learned pair: the critic's V(before) as it stood before learning, the reward the pair
-    // produced, the pair's discount, the critic's V(after), and whether `before` is the previous
-    // pair's `after`. A broken chain drops the returns still being accumulated.
+    static constexpr double FlatSpread = .25;  // return variance under which there is nothing to score
+    enum class State { Warming, Flat, Scored };
+    // One learned pair: the critic's V(before) as it stood before learning, the linear reward the
+    // pair produced, the pair's discount, the critic's V(after), and whether `before` is the
+    // previous pair's `after`. A broken chain drops the returns still being accumulated.
     void observe(double predicted, double reward, double discount, double valueAfter, bool chained);
-    double value() const;                    // in [0, 1]; -1 while warming up
+    State state() const;
+    double value() const;                    // in [0, 1] when Scored; -1 otherwise
+    double variation() const { return spread; }  // variance of the realised cost return
     uint32_t count() const { return n; }
 private:
     struct Pending { double predicted, realised, discount; int steps; };

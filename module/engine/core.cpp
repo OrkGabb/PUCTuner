@@ -367,33 +367,36 @@ void Accuracy::observe(double predicted, double reward, double discount, double 
     if (!std::isfinite(predicted) || !std::isfinite(reward) || !std::isfinite(discount) ||
         !std::isfinite(valueAfter)) { pending.clear(); return; }
     if (!chained) pending.clear();
-    pending.push_back({predicted, 0, 1, 0});
+    // The cost part: the constant +1 and its hard-coded value ValueLimit leave both sides.
+    pending.push_back({predicted - ValueLimit, 0, 1, 0});
     for (auto& p : pending) {
-        p.realised += p.discount * reward;
+        p.realised += p.discount * (reward - 1);
         p.discount *= clip(discount, 0, 1);
         ++p.steps;
     }
     while (!pending.empty() && pending.front().steps >= Lookahead) {
         const auto& p = pending.front();
-        score(p.predicted, p.realised + p.discount * valueAfter);
+        score(p.predicted, p.realised + p.discount * (valueAfter - ValueLimit));
         pending.erase(pending.begin());
     }
+}
+Accuracy::State Accuracy::state() const {
+    if (n < Warmup) return State::Warming;
+    return spread < FlatSpread ? State::Flat : State::Scored;
 }
 void Accuracy::score(double predicted, double target) {
     if (n < 1000000000U) ++n;
     // A plain average until Horizon windows exist, then an exponential one: the early estimate
     // is not dragged towards the zero it started from.
-    const double a = std::max(1. / Horizon, 1. / n), b = std::max(1. / SpreadHorizon, 1. / n);
+    const double a = std::max(1. / Horizon, 1. / n);
     const double d = target - mean;
-    mean += b * d;
-    spread = (1 - b) * (spread + b * d * d);
+    mean += a * d;
+    spread = (1 - a) * (spread + a * d * d);
     error = (1 - a) * error + a * (target - predicted) * (target - predicted);
 }
 double Accuracy::value() const {
-    if (n < Warmup) return -1;
-    // Floor the variance: an idle stretch has an almost constant target, and dividing by its
-    // near-zero spread would turn rounding noise into a verdict.
-    return clip(1 - error / std::max(spread, 1e-4), 0, 1);
+    if (state() != State::Scored) return -1;
+    return clip(1 - error / spread, 0, 1);
 }
 double Critic::learn(const Features& before, const CostVector& measured, const Features& after,
                      Tier tier, double rate, double step) {

@@ -558,7 +558,11 @@ int main(int argc, char** argv) {
                << "\nsimulations=" << decision.simulations << "\ndepth=" << decision.depth
                << "\nplan_value=" << decision.value << "\nstate_value=" << lastValue
                << "\ntd_error=" << lastError << "\nconfidence=" << accuracy.value()
-               << "\nconfidence_windows=" << accuracy.count() << "\ncritic_updates=" << brain.critic.updates
+               << "\nconfidence_windows=" << accuracy.count()
+               << "\nconfidence_state=" << (accuracy.state() == Accuracy::State::Warming ? "warming"
+                                            : accuracy.state() == Accuracy::State::Flat ? "flat" : "scored")
+               << "\nconfidence_variation=" << accuracy.variation()
+               << "\ncritic_updates=" << brain.critic.updates
                << "\nbudget=" << allowance.remaining() << "\nceiling=" << limits.ceiling
                // The probe's own state belongs here: a silent failure leaving these at zero is
                // otherwise indistinguishable from a device with no scheduling delay at all.

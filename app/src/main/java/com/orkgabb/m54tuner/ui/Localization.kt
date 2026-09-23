@@ -179,6 +179,7 @@ private val EN_REPLACEMENTS = listOf(
     "Memória anterior reutilizada" to "Previous memory reused",
     "Reutilizar" to "Reuse",
     "Medindo · " to "Measuring · ",
+    "Uso estável · nada a prever" to "Steady use · nothing to predict",
     "Thread mais quente" to "Hottest thread",
     "Cadência medida" to "Measured cadence",
     "Espera por CPU" to "Waiting for CPU",
